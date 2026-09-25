@@ -73,8 +73,10 @@ Bot replies in English; user input may be English or Bahasa Indonesia.
 ## Apps Script gotchas to handle
 - Telegram may deliver the same update twice. Dedupe by update_id in
   CacheService before doing anything.
-- getWebhookInfo may show a 302 error because Apps Script web apps redirect.
-  Updates are still delivered; dedupe handles any retries.
+- doPost must return HtmlService output, never ContentService. ContentService
+  answers with a 302 redirect, which Telegram treats as a failed delivery: it
+  retries the same update forever and queues every newer message behind it.
+  Dedupe still guards against the occasional genuine retry.
 - Use LockService around writes (IDs, balances) because both users can send
   at the same time.
 - Limits: 6 minutes per execution, daily UrlFetch quota, 20 triggers per

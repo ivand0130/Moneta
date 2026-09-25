@@ -5,14 +5,14 @@
 
 /** Checks that the Script Properties needed so far are set (values hidden). */
 function testConfig() {
-  const required = [PROP.BOT_TOKEN, PROP.GEMINI_KEY, PROP.WEB_APP_URL];
+  const required = [PROP.BOT_TOKEN, PROP.GEMINI_KEY, PROP.WEB_APP_URL, PROP.MAIN_SHEET_ID, PROP.TEMPLATE_ID];
   required.forEach(function (name) {
     console.log((getProp_(name) !== null ? 'PASS' : 'FAIL') + ': ' + name + ' is set');
   });
   console.log((getProp_(PROP.WEBHOOK_KEY) !== null ? 'PASS' : 'FAIL') +
     ': WEBHOOK_KEY is set (created automatically by setWebhook)');
   const ids = getAllowedChatIds_();
-  console.log((ids.length > 0 ? 'PASS' : 'FAIL') + ': ALLOWED_CHAT_IDS has ' + ids.length + ' chat ID(s)');
+  console.log((ids.length > 0 ? 'PASS' : 'FAIL') + ': ' + ids.length + ' allowed chat ID(s)');
 }
 
 /** Checks the duplicate-update check: first time new, second time duplicate. */
@@ -24,19 +24,56 @@ function testDedupe() {
   console.log((second === true ? 'PASS' : 'FAIL') + ': second sighting is a duplicate');
 }
 
-/** Checks the allow-list logic, without Telegram. */
+/** Checks the allow-list: fallback parser, then the live Users table. */
 function testAllowList() {
-  const saved = getProp_(PROP.ALLOWED_CHAT_IDS);
-  const props = PropertiesService.getScriptProperties();
-  try {
-    props.setProperty(PROP.ALLOWED_CHAT_IDS, ' 111 , 222 ');
-    console.log((isAllowedChat_(111) ? 'PASS' : 'FAIL') + ': 111 is allowed');
-    console.log((isAllowedChat_('222') ? 'PASS' : 'FAIL') + ': 222 is allowed');
-    console.log((!isAllowedChat_(333) ? 'PASS' : 'FAIL') + ': 333 is blocked');
-  } finally {
-    if (saved === null) props.deleteProperty(PROP.ALLOWED_CHAT_IDS);
-    else props.setProperty(PROP.ALLOWED_CHAT_IDS, saved);
+  const parsed = parseChatIdList_(' 111 , 222 ,');
+  console.log((parsed.join('|') === '111|222' ? 'PASS' : 'FAIL') + ': fallback list parses to 111, 222');
+
+  clearConfigCache();
+  const users = getUsers_();
+  if (users === null) {
+    console.log('INFO: no main sheet yet, so the bot uses ALLOWED_CHAT_IDS.');
+    return;
   }
+  const active = users.filter(function (u) { return u.active; });
+  console.log((active.length > 0 ? 'PASS' : 'FAIL') + ': Users table has ' + active.length + ' active user(s): ' +
+    active.map(function (u) { return u.name + ' (' + u.chatId + ')'; }).join(', '));
+  active.forEach(function (u) {
+    console.log((isAllowedChat_(u.chatId) ? 'PASS' : 'FAIL') + ': ' + u.name + ' is allowed');
+  });
+  users.filter(function (u) { return !u.active; }).forEach(function (u) {
+    console.log((!isAllowedChat_(u.chatId) ? 'PASS' : 'FAIL') + ': ' + u.name + ' (Active = No) is blocked');
+  });
+  console.log((!isAllowedChat_('1') ? 'PASS' : 'FAIL') + ': unknown chat ID 1 is blocked');
+}
+
+/**
+ * Checks the main sheet: all tabs/columns exist, the formulas calculate
+ * (no errors), the Settings loader works, and writing to Logs works.
+ */
+function testSheet() {
+  const result = validateSheet();
+  console.log((result.ok ? 'PASS' : 'FAIL') + ': validateSheet');
+
+  const ss = openMainSheet_();
+  const wallets = readTableByHeaders_(ss.getSheetByName(TAB.WALLETS), 'Wallet');
+  const bad = wallets.filter(function (w) { return typeof w['current balance'] !== 'number'; });
+  console.log((wallets.length > 0 && bad.length === 0 ? 'PASS' : 'FAIL') + ': ' + wallets.length +
+    ' wallets, every Current Balance is a number' +
+    (bad.length ? ' (bad: ' + bad.map(function (w) { return w['wallet'] + '=' + w['current balance']; }).join(', ') + ')' : ''));
+
+  const settings = getSettings_();
+  console.log((settings['large amount threshold'] === '5000000' ? 'PASS' : 'FAIL') +
+    ': Settings loader reads Large Amount Threshold = ' + settings['large amount threshold']);
+
+  const owners = readTableByHeaders_(ss.getSheetByName(TAB.SETTINGS), 'Owners')
+    .map(function (row) { return row['owners']; });
+  console.log((owners.indexOf('Shared') !== -1 ? 'PASS' : 'FAIL') + ': Owners dropdown list = ' + owners.join(', '));
+
+  const logs = ss.getSheetByName(TAB.LOGS);
+  const before = lastDataRow_(logs);
+  writeLogRow_('INFO', 'testSheet', 'Test log row, safe to delete');
+  console.log((lastDataRow_(logs) === before + 1 ? 'PASS' : 'FAIL') + ': wrote a test row to the Logs tab');
 }
 
 /**

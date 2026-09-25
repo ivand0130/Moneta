@@ -308,10 +308,18 @@ function createTemplate() {
       '(the old sheets stay in Drive).');
   }
 
-  const folder = DriveApp.createFolder('MonetaBot');
+  const folders = DriveApp.getRootFolder().getFoldersByName('MonetaBot');
+  const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder('MonetaBot');
   const template = buildTemplateSpreadsheet_('MonetaBot Template');
   const templateFile = DriveApp.getFileById(template.getId());
   templateFile.moveTo(folder);
+
+  // Check the template before copying it, so a broken build stops here.
+  console.log('Template:   ' + template.getUrl());
+  if (!validateSheet(template.getId()).ok) {
+    throw new Error('The template has problems (see the log above). Nothing was saved to ' +
+      'Script Properties. Send the log to Claude, then move "MonetaBot Template" to the trash.');
+  }
 
   const main = SpreadsheetApp.openById(templateFile.makeCopy('MonetaBot Main', folder).getId());
   fillMainSheetUsers_(main);
@@ -323,16 +331,47 @@ function createTemplate() {
   props.setProperty(PROP.MAIN_SHEET_ID, main.getId());
   clearConfigCache();
 
-  console.log('Template:   ' + template.getUrl());
   console.log('Main sheet: ' + main.getUrl());
   const result = validateSheet(main.getId());
   console.log(result.ok ? 'PASS: createTemplate finished.' : 'FAIL: see the missing items above.');
 }
 
+/**
+ * Run from the editor to undo createTemplate: moves the template and main
+ * sheet to the Drive trash (restorable for 30 days) and clears their Script
+ * Properties, so createTemplate can run again. Refuses if the main sheet
+ * already has transactions, so real data can't be thrown away by accident.
+ */
+function resetSheets() {
+  const mainId = getProp_(PROP.MAIN_SHEET_ID);
+  const templateId = getProp_(PROP.TEMPLATE_ID);
+  if (mainId !== null) {
+    const trx = SpreadsheetApp.openById(mainId).getSheetByName(TAB.TRANSACTIONS);
+    if (trx !== null && lastDataRow_(trx) > 1) {
+      throw new Error('The main sheet has transactions, so resetSheets stopped. Nothing was changed.');
+    }
+  }
+  [mainId, templateId].forEach(function (id) {
+    if (id === null) return;
+    const file = DriveApp.getFileById(id);
+    file.setTrashed(true);
+    console.log('Moved to trash: ' + file.getName());
+  });
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty(PROP.MAIN_SHEET_ID);
+  props.deleteProperty(PROP.TEMPLATE_ID);
+  mainSheetCache_ = null;
+  clearConfigCache();
+  console.log('Done. MAIN_SHEET_ID and TEMPLATE_ID cleared; you can run createTemplate again.');
+}
+
 /** Builds a complete, clean spreadsheet with every tab, rule and chart. */
 function buildTemplateSpreadsheet_(name) {
   const ss = SpreadsheetApp.create(name);
-  ss.setSpreadsheetLocale('id_ID'); // Rp1.250.000, dd/mm dates
+  // Formulas below use English syntax (commas). They must be written while
+  // the sheet is en_US; in id_ID they'd be a parse error. We switch to id_ID
+  // at the end, and Sheets converts the already-parsed formulas itself.
+  ss.setSpreadsheetLocale('en_US');
   ss.setSpreadsheetTimeZone('Asia/Jakarta');
 
   const schema = getSchema_();
@@ -352,6 +391,9 @@ function buildTemplateSpreadsheet_(name) {
   writeSampleRows_(ss);
   buildDashboard_(ss, ss.getSheetByName(TAB.DASHBOARD), r);
   ss.setActiveSheet(ss.getSheetByName(TAB.DASHBOARD));
+  SpreadsheetApp.flush();
+
+  ss.setSpreadsheetLocale('id_ID'); // Rp1.250.000, dd/mm dates
   SpreadsheetApp.flush();
   return ss;
 }

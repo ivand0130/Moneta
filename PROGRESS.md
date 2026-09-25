@@ -3,8 +3,14 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 1 — DONE (2026-09-25). Main sheet + template built, all tests pass.
-Next: Phase 2 — Core logging: income, expense, transfer
+Phase 2 — code pushed (2026-09-25), waiting on manual setup + Telegram test.
+Phase 1 — DONE (2026-09-25).
+
+## Deferred (agreed, must be picked up later — do not drop)
+- AI natural-language PARSING fallback: when the rule-based parser can't read
+  a message, ask Gemini to extract type/amount/wallet/date/note (JSON only),
+  then show the normal preview. Phase 2 uses Gemini for category suggestion
+  only. Pick up in Phase 3 or later, before the OCR phase (it shares AI.gs).
 
 ## Done
 - Phase 0 (skeleton, no transaction logic)

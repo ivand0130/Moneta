@@ -132,7 +132,9 @@ function testCtx_() {
   const c = function (name, type, keywords) { return { name: name, type: type, keywords: keywords || [] }; };
   return {
     now: new Date(2026, 8, 25, 10, 30, 0), // 25 Sep 2026 10:30
-    wallets: [w('BCA', 'Spending'), w('GoPay', 'Spending'), w('Cash', 'Spending'), w('IPOT', 'Investment'),
+    wallets: [w('BCA', 'Spending'), w('GoPay', 'Spending'), w('Cash', 'Spending'), w('IPOT (Saham)', 'Investment'),
+      w('Ajaib Kripto (Kripto)', 'Investment'), w('Ajaib Kripto (Saham US)', 'Investment'),
+      w('Mandiri (Payroll)', 'Spending'), w('Mandiri (Joint)', 'Spending'),
       w('Jago', 'Savings'), w('Bank Jago Syariah', 'Savings'), w('Saham', 'Investment', 'Investment'),
       { name: 'OldBank', group: 'Spending', type: 'Cash', active: false }],
     investmentGroups: ['investment'],
@@ -250,7 +252,15 @@ function testParser() {
     ['25rb parkir tgl 31', { date: '2026-8-31' }],
     ['25rb parkir tgl 20 sep', { date: '2026-9-20', dateNeedsConfirm: false }],
     ['50rb makan IPOT', { ok: false, error: 'investment_wallet' }],
-    ['transfer 1jt BCA ke IPOT', { ok: true, type: 'Transfer', wallet: 'BCA', toWallet: 'IPOT' }],
+    ['transfer 1jt BCA ke IPOT', { ok: true, type: 'Transfer', wallet: 'BCA', toWallet: 'IPOT (Saham)' }],
+    // Wallet names with brackets: the short name works; shared short names ask to choose
+    ['transfer 1jt BCA ke ipot saham', { toWallet: 'IPOT (Saham)' }],
+    ['transfer 1jt BCA ke Ajaib Kripto', { ok: true, toWallet: null,
+      toWalletChoices: ['Ajaib Kripto (Kripto)', 'Ajaib Kripto (Saham US)'] }],
+    ['transfer 1jt BCA ke Ajaib Kripto (Saham US)', { toWallet: 'Ajaib Kripto (Saham US)', toWalletChoices: null }],
+    ['50rb makan Ajaib Kripto', { ok: false, error: 'investment_wallet' }],
+    ['50rb makan Mandiri', { ok: true, wallet: null, walletChoices: ['Mandiri (Payroll)', 'Mandiri (Joint)'], note: 'makan' }],
+    ['50rb makan mandiri (joint)', { wallet: 'Mandiri (Joint)', walletChoices: null, note: 'makan' }],
     ['transfer 1jt BCA ke Saham', { ok: false, error: 'investment_wallet' }],
     ['50rb makan Jago', { ok: true, wallet: 'Jago' }]
   ];

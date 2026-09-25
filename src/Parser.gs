@@ -202,12 +202,30 @@ function extractDate_(tokens, now) {
  * ("pakai BCA", "ke GoPay"). Returns [{ wallet, index, connector }].
  */
 function extractWallets_(tokens, wallets) {
-  const list = wallets
-    .filter(function (w) { return w.active !== false; })
-    .map(function (w) { return { wallet: w, words: w.name.toLowerCase().split(/\s+/) }; })
-    .sort(function (a, b) { return b.words.length - a.words.length || b.wallet.name.length - a.wallet.name.length; });
+  // Each wallet can be written as its full name ("IPOT (Saham)" or "ipot saham") or just the
+  // part before the brackets ("IPOT"). A short name shared by several wallets
+  // ("Ajaib Kripto" → Ajaib Kripto (Kripto), Ajaib Kripto (Saham US)) matches all of them,
+  // and the user picks one; an exact full name always wins over a short one.
+  const words = function (s) { return s.toLowerCase().replace(/[()]/g, ' ').trim().split(/\s+/).filter(String); };
+  const phrases = {};
+  const add = function (w, list, exact) {
+    const key = list.join(' ');
+    if (key === '') return;
+    phrases[key] = phrases[key] || { words: list, exact: [], short: [] };
+    phrases[key][exact ? 'exact' : 'short'].push(w);
+  };
+  wallets.filter(function (w) { return w.active !== false; }).forEach(function (w) {
+    add(w, words(w.name), true);
+    const base = w.name.replace(/\s*\([^)]*\)\s*$/, '');
+    if (base !== w.name) add(w, words(base), false);
+  });
+  const entries = Object.keys(phrases).map(function (k) {
+    const p = phrases[k];
+    return { words: p.words, wallets: p.exact.length ? p.exact : p.short };
+  }).sort(function (a, b) { return b.words.length - a.words.length || b.words.join(' ').length - a.words.join(' ').length; });
+
   const found = [];
-  list.forEach(function (entry) {
+  entries.forEach(function (entry) {
     for (let i = 0; i + entry.words.length <= tokens.length; i++) {
       let match = true;
       for (let k = 0; k < entry.words.length; k++) {
@@ -215,17 +233,27 @@ function extractWallets_(tokens, wallets) {
         if (t.used || t.clean !== entry.words[k]) { match = false; break; }
       }
       if (!match) continue;
+      const text = tokens.slice(i, i + entry.words.length).map(function (t) { return t.raw; }).join(' ');
       for (let k = 0; k < entry.words.length; k++) tokens[i + k].used = true;
       let connector = '';
       if (i > 0 && !tokens[i - 1].used && WALLET_CONNECTORS.indexOf(tokens[i - 1].clean) !== -1) {
         connector = tokens[i - 1].clean;
         tokens[i - 1].used = true;
       }
-      found.push({ wallet: entry.wallet, index: i, connector: connector });
+      found.push({ wallets: entry.wallets.slice(), index: i, connector: connector, text: text });
     }
   });
   found.sort(function (a, b) { return a.index - b.index; });
   return found;
+}
+
+/** Wallet name for a mention: the wallet if there's one, otherwise what was typed. */
+function mentionLabel_(m) {
+  return m.wallets.length === 1 ? m.wallets[0].name : m.text;
+}
+
+function mentionKey_(m) {
+  return m.wallets.map(function (w) { return w.name; }).sort().join('|');
 }
 
 /** Finds amounts in the unused tokens ("Rp 50.000" and "50 rb" are joined). */
@@ -282,8 +310,8 @@ function parseTransaction_(text, ctx) {
 
   const allMentions = extractWallets_(tokens, ctx.wallets);
   // The same wallet written twice counts once, except "BCA ke BCA" (checked below).
-  const mentions = allMentions.filter(function (f, i) {
-    return allMentions.findIndex(function (g) { return g.wallet.name === f.wallet.name; }) === i;
+  let mentions = allMentions.filter(function (f, i) {
+    return allMentions.findIndex(function (g) { return mentionKey_(g) === mentionKey_(f); }) === i;
   });
   const repeatedWallet = allMentions.length > mentions.length;
 
@@ -305,48 +333,59 @@ function parseTransaction_(text, ctx) {
   });
   const hasDestConnector = allMentions.some(function (m) { return DEST_CONNECTORS.indexOf(m.connector) !== -1; });
   const isTransfer = transferWord || (allMentions.length >= 2 && hasDestConnector);
-  if (isTransfer && repeatedWallet && mentions.length === 1) {
-    return { ok: false, error: 'same_wallet', wallet: mentions[0].wallet.name };
+  if (isTransfer && repeatedWallet && mentions.length === 1 && mentions[0].wallets.length === 1) {
+    return { ok: false, error: 'same_wallet', wallet: mentionLabel_(mentions[0]) };
   }
 
   // Investment wallets: never for expenses/income. Transfers may use investment-group cash
   // wallets (e.g. BCA ke IPOT) but not Wallet Type = Investment (purchases come later).
-  const invest = mentions.filter(function (m) {
-    return isTransfer ? m.wallet.type === 'Investment' : isInvestmentWallet_(m.wallet, ctx.investmentGroups);
-  })[0];
-  if (invest) return { ok: false, error: 'investment_wallet', wallet: invest.wallet.name };
+  // A name matching several wallets keeps only the allowed ones; none left = blocked.
+  const allowed = function (w) {
+    return isTransfer ? w.type !== 'Investment' : !isInvestmentWallet_(w, ctx.investmentGroups);
+  };
+  for (let k = 0; k < mentions.length; k++) {
+    const kept = mentions[k].wallets.filter(allowed);
+    if (kept.length === 0) return { ok: false, error: 'investment_wallet', wallet: mentionLabel_(mentions[k]) };
+    mentions[k] = Object.assign({}, mentions[k], { wallets: kept });
+  }
 
   const amounts = extractAmounts_(tokens);
 
-  let wallet = null;
-  let toWallet = null;
+  // A mention is either one wallet (a name) or several to pick from (a list of names).
+  const pick = function (m) { return m.wallets.length === 1 ? m.wallets[0].name : null; };
+  const choices = function (m) { return m.wallets.length > 1 ? m.wallets.map(function (w) { return w.name; }) : null; };
+  let from = null;
+  let to = null;
   if (isTransfer) {
     const extras = tokens.some(function (t) { return !t.used && TRANSFER_EXTRA_WORDS.indexOf(t.clean) !== -1; });
     if (extras || amounts.filter(function (a) { return a.strong; }).length > 1) {
       return { ok: false, error: 'transfer_extras' };
     }
     if (mentions.length > 2) {
-      return { ok: false, error: 'too_many_wallets', wallets: mentions.map(function (m) { return m.wallet.name; }) };
+      return { ok: false, error: 'too_many_wallets', wallets: mentions.map(mentionLabel_) };
     }
     const dest = mentions.filter(function (m) { return DEST_CONNECTORS.indexOf(m.connector) !== -1; })[0];
     const src = mentions.filter(function (m) { return SOURCE_CONNECTORS.indexOf(m.connector) !== -1; })[0];
     if (mentions.length === 2) {
-      const d = dest || (src ? mentions.filter(function (m) { return m !== src; })[0] : mentions[1]);
-      const s = mentions.filter(function (m) { return m !== d; })[0];
-      wallet = s.wallet.name;
-      toWallet = d.wallet.name;
+      to = dest || (src ? mentions.filter(function (m) { return m !== src; })[0] : mentions[1]);
+      from = mentions.filter(function (m) { return m !== to; })[0];
     } else if (mentions.length === 1) {
-      const only = mentions[0];
-      if (dest === only || (!src && topUp)) toWallet = only.wallet.name;
-      else wallet = only.wallet.name;
+      if (dest === mentions[0] || (!src && topUp)) to = mentions[0];
+      else from = mentions[0];
     }
-    if (wallet !== null && wallet === toWallet) return { ok: false, error: 'same_wallet', wallet: wallet };
+    if (from && to && pick(from) !== null && pick(from) === pick(to)) {
+      return { ok: false, error: 'same_wallet', wallet: pick(from) };
+    }
   } else {
     if (mentions.length > 1) {
-      return { ok: false, error: 'two_wallets', wallets: mentions.map(function (m) { return m.wallet.name; }) };
+      return { ok: false, error: 'two_wallets', wallets: mentions.map(mentionLabel_) };
     }
-    if (mentions.length === 1) wallet = mentions[0].wallet.name;
+    from = mentions[0] || null;
   }
+  const wallet = from ? pick(from) : null;
+  const walletChoices = from ? choices(from) : null;
+  const toWallet = to ? pick(to) : null;
+  const toWalletChoices = to ? choices(to) : null;
 
   // Amount: exactly one clear amount wins; small bare numbers ("2 porsi") stay in the note.
   const strong = amounts.filter(function (a) { return a.strong; });
@@ -401,7 +440,9 @@ function parseTransaction_(text, ctx) {
     dateNeedsConfirm: !!dateResult.needsConfirm,
     dateText: dateResult.text || '',
     wallet: wallet,
+    walletChoices: walletChoices,
     toWallet: toWallet,
+    toWalletChoices: toWalletChoices,
     category: category,
     categoryHow: categoryHow,
     unknownTag: unknownTag,

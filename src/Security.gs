@@ -183,11 +183,11 @@ function showSaldo_(chatId, filter, isDefaultPassword) {
   if (isDefaultPassword) {
     text += '\n\n⚠️ You are still using the default password <b>0000</b>. Change it with /changepass.';
   }
-  const delay = Math.min(getSettingInt_(SETTING.SALDO_DELETE_SECONDS), MAX_DELETE_DELAY_SECONDS);
+  const delay = SALDO_DELETE_SECONDS;
   const triggerMissing = delay > 0 && !ScriptApp.getProjectTriggers().some(function (t) {
     return t.getHandlerFunction() === 'cleanupMessages';
   });
-  if (delay > 0 && !triggerMissing) text += '\n\n🕒 This message will be deleted in about ' + formatDelay_(delay) + '.';
+  if (delay > 0 && !triggerMissing) text += '\n\n🕒 This message will be deleted in ' + formatDelay_(delay) + '.';
   if (triggerMissing) text += '\n\n⚠️ Auto-delete is not set up yet (run installCleanupTrigger in the editor).';
 
   const sent = sendMessage(chatId, text);

@@ -69,7 +69,11 @@ function buildSaldoText_(wallets, filter, investmentGroups) {
     list = list.filter(function (w) { return !isInvestmentWallet_(w, investmentGroups); });
   } else if (f !== 'all' && f !== 'semua') {
     const by = function (field) { return list.filter(function (w) { return w[field].toLowerCase() === f; }); };
-    const byName = by('name');
+    // Wallet name, or the part before brackets ("/saldo ipot" → IPOT (Saham); "ajaib kripto" → both Ajaib wallets)
+    let byName = by('name');
+    if (byName.length === 0) {
+      byName = list.filter(function (w) { return w.name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase() === f; });
+    }
     const byGroup = by('group');
     list = byName.length ? byName : (byGroup.length ? byGroup : by('owner'));
     if (list.length === 0) {

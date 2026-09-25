@@ -124,8 +124,10 @@ function startTransaction_(message) {
     dateNeedsConfirm: parsed.dateNeedsConfirm,
     dateText: parsed.dateText,
     wallet: parsed.wallet,
+    walletChoices: parsed.walletChoices,
     walletHow: parsed.wallet ? 'mentioned' : '',
     toWallet: parsed.toWallet,
+    toWalletChoices: parsed.toWalletChoices,
     category: parsed.category,
     categoryHow: parsed.categoryHow,
     unknownTag: parsed.unknownTag,
@@ -170,6 +172,7 @@ function advanceTrx_(p, ctx) {
     }
     const usable = everydayWallets_(ctx.wallets, ctx.investmentGroups);
     if (!findWallet_(usable, d.wallet)) {
+      if (d.walletChoices) return askWallet_(p, ctx, 'wallet'); // a name that fits several wallets
       // Wallet rule 2: the category's default wallet, shown in the preview.
       const cat = ctx.categories.filter(function (c) { return c.name === d.category; })[0];
       const def = cat ? findWallet_(usable, cat.defaultWallet) : null;
@@ -219,7 +222,10 @@ function askAmount_(p) {
 function askWallet_(p, ctx, which, warning) {
   const exclude = which === 'to' ? p.d.wallet : (which === 'from' ? p.d.toWallet : null);
   let list;
-  if (which !== 'wallet') {
+  const typed = which === 'to' ? p.d.toWalletChoices : p.d.walletChoices;
+  if (typed && typed.length) {
+    list = typed.map(function (n) { return findWallet_(ctx.wallets, n); }).filter(Boolean);
+  } else if (which !== 'wallet') {
     list = cashWallets_(ctx.wallets);
   } else if (p.d.type === 'Expense') {
     list = spendingWallets_(ctx.wallets, ctx.investmentGroups, ctx.spendingGroups);
@@ -323,10 +329,12 @@ function trxCallback_(p, action, arg, user) {
       break;
     case 'w':
       d.wallet = p.opts[Number(arg)];
+      d.walletChoices = null;
       d.walletHow = 'chosen';
       break;
     case 'tw':
       d.toWallet = p.opts[Number(arg)];
+      d.toWalletChoices = null;
       break;
     case 'c':
       d.category = p.opts[Number(arg)];

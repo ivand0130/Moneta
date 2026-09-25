@@ -201,8 +201,10 @@ function scheduleDelete_(chatId, messageId, seconds) {
 }
 
 /**
- * Time trigger handler (every minute). Deletes messages whose time has come.
- * Exits right away when the queue is empty, to save trigger quota.
+ * Time trigger handler (every minute). Exits right away when the queue is
+ * empty, to save trigger quota. Messages due before the next run (within
+ * 60s) are taken off the queue, and the run waits until each one's exact
+ * time before deleting it, so a 60s delete happens at ~60s, not up to 2 min.
  */
 function cleanupMessages() {
   if (CacheService.getScriptCache().get(DELETE_QUEUE_CACHE_KEY) === '[]') return;
@@ -211,14 +213,16 @@ function cleanupMessages() {
   withScriptLock_(function () {
     const queue = readDeleteQueue_();
     if (queue.length === 0) return;
-    const now = Date.now();
-    due = queue.filter(function (item) { return item.at <= now; });
+    const horizon = Date.now() + 60000;
+    due = queue.filter(function (item) { return item.at <= horizon; });
     if (due.length > 0) {
-      writeDeleteQueue_(queue.filter(function (item) { return item.at > now; }));
+      writeDeleteQueue_(queue.filter(function (item) { return item.at > horizon; }));
     }
   });
 
-  due.forEach(function (item) {
+  due.sort(function (a, b) { return a.at - b.at; }).forEach(function (item) {
+    const wait = item.at - Date.now();
+    if (wait > 0) Utilities.sleep(Math.min(wait, 60000));
     if (!deleteMessage(item.c, item.m)) {
       // Already deleted by hand, or older than 48h: log and move on.
       try {

@@ -70,7 +70,6 @@ const SETTING = {
   LARGE_AMOUNT: 'Large Amount Threshold',
   DUPLICATE_MINUTES: 'Duplicate Window (minutes)',
   HIDE_AMOUNTS: 'Hide amounts',
-  SALDO_DELETE_SECONDS: 'Saldo auto-delete (seconds)',
   PASSWORD: 'Password',
   SPENDING_GROUPS: 'Spending Wallet Groups',
   INVESTMENT_GROUPS: 'Investment Wallet Groups'
@@ -88,7 +87,6 @@ const SETTING_ROWS = [
   [SETTING.LARGE_AMOUNT, '5000000', 'Amounts above this (Rp) get a warning in the preview.'],
   [SETTING.DUPLICATE_MINUTES, '5', 'Warn if the same type + amount + note was logged within this many minutes.'],
   [SETTING.HIDE_AMOUNTS, 'Yes', 'Yes = amounts in /saldo, /inv, /open, /report are hidden until tapped.'],
-  [SETTING.SALDO_DELETE_SECONDS, '60', 'Delete the /saldo reply after this many seconds. 0 = never. Max 169200 (47 hours).'],
   [SETTING.PASSWORD, '0000', 'Password for /saldo. Numbers only. Change it here or with /changepass. 0000 = default (the bot reminds you to change it).'],
   [SETTING.SPENDING_GROUPS, 'Spending', 'Wallet groups offered as buttons for expenses (comma-separated).'],
   [SETTING.INVESTMENT_GROUPS, 'Investment', 'Wallet groups that hold investment money: not usable for expenses/income, hidden in /saldo (shown in /saldo all). Transfers are fine.'],
@@ -101,6 +99,9 @@ const SETTING_ROWS = [
   ['Main Sheet ID', '', 'Info only (written by the script). The real value is in Script Properties.'],
   ['Archive Folder ID', '', 'Info only. Set with /setarchive (later phase).']
 ];
+
+/** The /saldo reply is deleted this many seconds after it's sent (fixed by the owner's choice). */
+const SALDO_DELETE_SECONDS = 60;
 
 /** How many recent webhook outcomes to keep for showRecentUpdates(). */
 const RECENT_UPDATES_MAX = 10;

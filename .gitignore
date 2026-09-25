@@ -1,0 +1,6 @@
+# clasp login credentials (never commit)
+.clasprc.json
+# Local env / secrets
+.env
+*.secret
+node_modules/

@@ -119,11 +119,19 @@ function getFrom_(update) {
 
 /** Sends an allowed update to the right handler. */
 function routeUpdate_(update) {
+  if (update.callback_query) {
+    handleCallback_(update.callback_query);
+    return;
+  }
   if (update.message && typeof update.message.text === 'string') {
     handleText_(update.message);
     return;
   }
-  // Callback buttons, photos, etc. are handled in later phases.
+  if (update.message) {
+    sendMessage(String(update.message.chat.id),
+      'I can only read text for now. (GoPay Split Bill screenshots arrive in a later update.)');
+    return;
+  }
   console.log('Ignored update type: ' + Object.keys(update).join(', '));
 }
 
@@ -132,9 +140,22 @@ function handleText_(message) {
   const chatId = String(message.chat.id);
   const text = message.text.trim();
 
+  // An open password prompt comes first, so a password is never parsed as
+  // a transaction. A command cancels the prompt instead.
+  const pw = getPasswordState_(chatId);
+  if (pw && text.charAt(0) !== '/') {
+    handlePasswordInput_(message, pw);
+    return;
+  }
+  if (pw) clearPasswordState_(chatId);
+
   if (text.charAt(0) === '/') {
-    // "/help@MyBot extra words" → "/help"
-    const command = text.split(/\s+/)[0].split('@')[0].toLowerCase();
+    // "/saldo@MyBot spending" → command "/saldo", args "spending"
+    const firstSpace = text.search(/\s/);
+    const command = (firstSpace === -1 ? text : text.slice(0, firstSpace)).split('@')[0].toLowerCase();
+    const args = firstSpace === -1 ? '' : text.slice(firstSpace + 1).trim();
+    const sub = args.split(/\s+/)[0].toLowerCase();
+    const user = getUserByChatId_(chatId);
     switch (command) {
       case '/start':
         sendMessage(chatId, buildStartText_(message.from));
@@ -142,29 +163,73 @@ function handleText_(message) {
       case '/help':
         sendMessage(chatId, buildHelpText_());
         return;
+      case '/saldo':
+        startSaldo_(chatId, args);
+        return;
+      case '/changepass':
+        startChangePassword_(chatId);
+        return;
+      case '/undo':
+        startUndo_(chatId, user);
+        return;
+      case '/wallet':
+        if (sub === 'add') startWalletAdd_(chatId, args.slice(3).trim());
+        else sendMessage(chatId, buildWalletListText_(loadWallets_(openMainSheet_())));
+        return;
+      case '/category':
+        if (sub === 'add') startCategoryAdd_(chatId, args.slice(3).trim());
+        else sendMessage(chatId, buildCategoryListText_(loadCategories_(openMainSheet_())));
+        return;
+      case '/cancel': {
+        const p = getPending_(chatId);
+        if (p) dropButtons_(chatId, p.msgId);
+        clearPending_(chatId);
+        sendMessage(chatId, 'OK, cancelled.');
+        return;
+      }
       default:
         sendMessage(chatId, 'Unknown command. Type /help to see what I can do.');
         return;
     }
   }
 
-  // Transaction logging arrives in Phase 2.
-  sendMessage(chatId, "I'm still being built. For now I only understand /start and /help.");
+  const p = getPending_(chatId);
+  if (p && p.kind === 'trx' && p.awaitText) {
+    handlePendingText_(p, message);
+    return;
+  }
+  startTransaction_(message);
 }
 
 function buildStartText_(from) {
   const name = from && from.first_name ? from.first_name : 'there';
-  return 'Hi ' + name + '! 👋\n\n' +
-    "I'm your money tracker bot. I'm set up and listening.\n" +
-    'Type /help to see what I can do.';
+  return 'Hi ' + escapeHtml_(name) + '! 👋\n\n' +
+    "I'm your money tracker bot. Just type what you spent or received, e.g. " +
+    '<code>50rb makan siang BCA</code>.\nType /help to see everything I can do.';
 }
 
 function buildHelpText_() {
-  // Placeholder: the full guide with examples comes in Phase 2.
-  return 'Help (work in progress)\n\n' +
-    '/start - check the bot is running\n' +
-    '/help - show this message\n\n' +
-    'Logging income, expenses and transfers is coming soon.';
+  return [
+    '📘 <b>How to log</b>',
+    '• <code>50rb makan siang di KFC</code> → expense',
+    '• <code>+5jt gaji BCA</code> or <code>gaji 5jt BCA</code> → income',
+    '• <code>transfer 1jt BCA ke GoPay</code> → transfer between your wallets',
+    '• <code>25rb parkir kemarin</code>, <code>… 20/09</code>, <code>… 5 okt</code> → another date',
+    '• <code>30rb obat #health</code> → choose the category yourself',
+    '',
+    'Amounts: 50000 · 50.000 · 50k · 50rb · 1.5jt · 2juta',
+    'Wallet: write its name anywhere (BCA, GoPay…). No wallet? I use the category\'s default or ask.',
+    'Nothing is saved until you tap ✅ Yes on the preview. ✏️ Edit changes any part.',
+    '',
+    '📋 <b>Commands</b>',
+    '/saldo — balances (password). Filter: <code>/saldo spending</code>, <code>/saldo me</code>',
+    '/undo — delete your last entry',
+    '/wallet — list wallets · <code>/wallet add Jenius</code>',
+    '/category — list categories · <code>/category add Pets</code>',
+    '/changepass — change the /saldo password (default 0000)',
+    '/cancel — stop what you\'re doing',
+    '/help — this guide'
+  ].join('\n');
 }
 
 /**

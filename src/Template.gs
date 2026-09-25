@@ -496,20 +496,9 @@ function writeSampleRows_(ss) {
   }));
 
   const settings = get(TAB.SETTINGS);
-  writeRowsByHeaders_(settings, 2, [
-    ['Timezone', 'Asia/Jakarta', 'Info only. The bot always uses Asia/Jakarta.'],
-    ['AI Enabled', 'Yes', 'Yes = use Gemini for parsing/categories/OCR. No = keywords and manual only.'],
-    ['Large Amount Threshold', '5000000', 'Amounts above this (Rp) get an extra warning in the preview.'],
-    ['Duplicate Window (minutes)', '5', 'Warn if the same entry is logged again within this many minutes.'],
-    ['Daily Reminder Time', '08:00', 'Hour for the daily hutang/piutang reminder (HH:MM).'],
-    ['Weekly Reminder Day', 'Monday', 'Day for the weekly summary reminder.'],
-    ['Monthly Reminder Date', '1', 'Day of month for the monthly reminder.'],
-    ['Price Update Reminder Time', '12:00', 'Last day of the month: reminder to update investment prices.'],
-    ['Closing Reminder Time', '18:00', 'Last day of the month: reminder to close the month.'],
-    ['Debt Reminder Days Before Due', '3', 'Start reminding this many days before a due date.'],
-    ['Main Sheet ID', '', 'Info only (written by the script). The real value is in Script Properties.'],
-    ['Archive Folder ID', '', 'Info only. Set with /setarchive (later phase).']
-  ].map(function (s) { return { 'Setting': s[0], 'Value': s[1], 'Notes': s[2] }; }));
+  writeRowsByHeaders_(settings, 2, SETTING_ROWS.map(function (s) {
+    return { 'Setting': s[0], 'Value': s[1], 'Notes': s[2] };
+  }));
 
   writeRowsByHeaders_(settings, 2, [
     { 'Chat ID': '', 'Display Name': 'Me', 'GoPay Name': '', 'Active': 'Yes' },
@@ -519,6 +508,33 @@ function writeSampleRows_(ss) {
   writeRowsByHeaders_(settings, 2, ['Spending', 'Savings', 'Investment'].map(function (g) {
     return { 'Wallet Groups': g };
   }));
+}
+
+/**
+ * Run from the editor after an update adds new settings: appends any
+ * missing rows from SETTING_ROWS (with their default values) to the
+ * Settings tab of the main sheet and the template. Existing rows and your
+ * values are never changed. Safe to run more than once.
+ */
+function upgradeSettings() {
+  [getProp_(PROP.MAIN_SHEET_ID), getProp_(PROP.TEMPLATE_ID)].forEach(function (id) {
+    if (id === null) return;
+    const ss = SpreadsheetApp.openById(id);
+    const sheet = ss.getSheetByName(TAB.SETTINGS);
+    const existing = readTableByHeaders_(sheet, 'Setting').map(function (r) {
+      return String(r['setting']).trim().toLowerCase();
+    });
+    const missing = SETTING_ROWS.filter(function (s) { return existing.indexOf(s[0].toLowerCase()) === -1; });
+    if (missing.length > 0) {
+      writeRowsByHeaders_(sheet, lastDataRow_(sheet, 'Setting') + 1, missing.map(function (s) {
+        return { 'Setting': s[0], 'Value': s[1], 'Notes': s[2] };
+      }));
+    }
+    console.log(ss.getName() + ': ' + (missing.length > 0
+      ? 'added ' + missing.map(function (s) { return s[0]; }).join(', ')
+      : 'already up to date'));
+  });
+  clearConfigCache();
 }
 
 /** Puts the chat IDs from ALLOWED_CHAT_IDS into the main sheet's Users table. */

@@ -36,7 +36,8 @@ function getHeaderMap_(sheet) {
 
 /**
  * Reads a tab (or one table inside it, like Users in Settings) as objects
- * keyed by lowercase header name. Rows where keyHeader is blank are skipped.
+ * keyed by lowercase header name, plus _row (the 1-based sheet row).
+ * Rows where keyHeader is blank are skipped.
  */
 function readTableByHeaders_(sheet, keyHeader) {
   const lastRow = sheet.getLastRow();
@@ -51,7 +52,7 @@ function readTableByHeaders_(sheet, keyHeader) {
   const rows = [];
   for (let i = 1; i < values.length; i++) {
     if (String(values[i][keyIdx]).trim() === '') continue;
-    const row = {};
+    const row = { _row: i + 1 };
     headers.forEach(function (h, j) {
       if (h !== '' && row[h] === undefined) row[h] = values[i][j];
     });
@@ -61,22 +62,50 @@ function readTableByHeaders_(sheet, keyHeader) {
 }
 
 /**
- * Last row (1-based) that has a value in the given column (default: the
- * first column). Returns 1 when only the header exists.
+ * Last row (1-based) that has a value. With keyHeader, only that column is
+ * checked (used for one table inside a shared tab, like Settings). Without
+ * it, every non-formula column is checked, so a row typed by hand without
+ * an ID is never overwritten. Returns 1 when only the header exists.
  */
 function lastDataRow_(sheet, keyHeader) {
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return 1;
-  let col = 0;
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol === 0) return 1;
+  let cols;
   if (keyHeader) {
-    col = getHeaderMap_(sheet)[keyHeader.toLowerCase()];
+    const col = getHeaderMap_(sheet)[keyHeader.toLowerCase()];
     if (col === undefined) throw new Error('Column "' + keyHeader + '" not found in tab ' + sheet.getName());
+    cols = [col];
+  } else {
+    const formulas = sheet.getRange(1, 1, 1, lastCol).getFormulas()[0];
+    cols = formulas.map(function (f, i) { return f === '' ? i : -1; }).filter(function (i) { return i !== -1; });
   }
-  const values = sheet.getRange(1, col + 1, lastRow, 1).getValues();
+  const values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
   for (let i = values.length - 1; i >= 1; i--) {
-    if (String(values[i][0]).trim() !== '') return i + 1;
+    for (let k = 0; k < cols.length; k++) {
+      if (String(values[i][cols[k]]).trim() !== '') return i + 1;
+    }
   }
   return 1;
+}
+
+/**
+ * Next ID like TRX-0124: highest existing number in the column + 1.
+ * Call inside withScriptLock_ so two users can't get the same ID.
+ */
+function nextId_(sheet, header, prefix) {
+  const col = getHeaderMap_(sheet)[header.toLowerCase()];
+  if (col === undefined) throw new Error('Column "' + header + '" not found in tab ' + sheet.getName());
+  let max = 0;
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const pattern = new RegExp('^' + prefix + '-(\\d+)$', 'i');
+    sheet.getRange(2, col + 1, lastRow - 1, 1).getValues().forEach(function (r) {
+      const m = String(r[0]).trim().match(pattern);
+      if (m) max = Math.max(max, Number(m[1]));
+    });
+  }
+  return prefix + '-' + String(max + 1).padStart(4, '0');
 }
 
 /**

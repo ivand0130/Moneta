@@ -9,7 +9,7 @@
 /** Names of Script Properties used by the bot. */
 const PROP = {
   BOT_TOKEN: 'BOT_TOKEN',               // Telegram bot token from @BotFather
-  GEMINI_KEY: 'GEMINI_KEY',             // Gemini API key (used from Phase 2)
+  GEMINI_KEY: 'GEMINI_KEY',             // Gemini API key
   WEB_APP_URL: 'WEB_APP_URL',           // Deployed web app URL ending in /exec
   WEBHOOK_KEY: 'WEBHOOK_KEY',           // Random secret, created by setWebhook()
   ALLOWED_CHAT_IDS: 'ALLOWED_CHAT_IDS', // Fallback only, used if the main sheet
@@ -17,8 +17,9 @@ const PROP = {
   MAIN_SHEET_ID: 'MAIN_SHEET_ID',       // Main Google Sheet ID (set by createTemplate)
   ARCHIVE_FOLDER_ID: 'ARCHIVE_FOLDER_ID',
   TEMPLATE_ID: 'TEMPLATE_ID',           // Clean template sheet (set by createTemplate)
-  PASSWORD_HASH: 'PASSWORD_HASH',
-  RECENT_UPDATES: 'RECENT_UPDATES'      // Written by the bot; see showRecentUpdates()
+  PASSWORD_HASH: 'PASSWORD_HASH',       // "salt:hash", set by /changepass (unset = 0000)
+  RECENT_UPDATES: 'RECENT_UPDATES',     // Written by the bot; see showRecentUpdates()
+  DELETE_QUEUE: 'DELETE_QUEUE'          // Backup of the auto-delete queue
 };
 
 /** Tab names in the main sheet. */
@@ -63,6 +64,39 @@ const LISTS = {
   YES_NO: ['Yes', 'No']
 };
 
+/** Setting names used by the code (rows in the Settings key/value table). */
+const SETTING = {
+  AI_ENABLED: 'AI Enabled',
+  GEMINI_MODEL: 'Gemini Model',
+  LARGE_AMOUNT: 'Large Amount Threshold',
+  DUPLICATE_MINUTES: 'Duplicate Window (minutes)',
+  HIDE_AMOUNTS: 'Hide amounts',
+  SALDO_DELETE_SECONDS: 'Saldo auto-delete (seconds)'
+};
+
+/**
+ * Every row of the Settings key/value table: [name, default, notes].
+ * createTemplate writes these; upgradeSettings() adds missing ones to an
+ * existing sheet. The default is only used if the row is missing or blank.
+ */
+const SETTING_ROWS = [
+  ['Timezone', 'Asia/Jakarta', 'Info only. The bot always uses Asia/Jakarta.'],
+  [SETTING.AI_ENABLED, 'Yes', 'Yes = use Gemini for category suggestions (and OCR later). No = keywords and buttons only.'],
+  [SETTING.GEMINI_MODEL, 'gemini-flash-latest', 'Gemini model name. Change it here if Google renames models.'],
+  [SETTING.LARGE_AMOUNT, '5000000', 'Amounts above this (Rp) get a warning in the preview.'],
+  [SETTING.DUPLICATE_MINUTES, '5', 'Warn if the same type + amount + note was logged within this many minutes.'],
+  [SETTING.HIDE_AMOUNTS, 'Yes', 'Yes = amounts in /saldo, /inv, /open, /report are hidden until tapped.'],
+  [SETTING.SALDO_DELETE_SECONDS, '60', 'Delete the /saldo reply after this many seconds. 0 = never. Max 169200 (47 hours).'],
+  ['Daily Reminder Time', '08:00', 'Hour for the daily hutang/piutang reminder (HH:MM).'],
+  ['Weekly Reminder Day', 'Monday', 'Day for the weekly summary reminder.'],
+  ['Monthly Reminder Date', '1', 'Day of month for the monthly reminder.'],
+  ['Price Update Reminder Time', '12:00', 'Last day of the month: reminder to update investment prices.'],
+  ['Closing Reminder Time', '18:00', 'Last day of the month: reminder to close the month.'],
+  ['Debt Reminder Days Before Due', '3', 'Start reminding this many days before a due date.'],
+  ['Main Sheet ID', '', 'Info only (written by the script). The real value is in Script Properties.'],
+  ['Archive Folder ID', '', 'Info only. Set with /setarchive (later phase).']
+];
+
 /** How many recent webhook outcomes to keep for showRecentUpdates(). */
 const RECENT_UPDATES_MAX = 10;
 
@@ -72,9 +106,9 @@ const DEDUPE_TTL_SECONDS = 21600;
 /** How long to wait for the script lock before giving up (ms). */
 const LOCK_TIMEOUT_MS = 10000;
 
-/** Users table is cached this long, so edits take effect within 5 minutes. */
-const USERS_CACHE_SECONDS = 300;
-const CACHE_KEY_USERS = 'users_v1';
+/** Settings tab (users + settings) is cached this long: edits apply within 5 min. */
+const SETTINGS_CACHE_SECONDS = 300;
+const CACHE_KEY_SETTINGS_TAB = 'settings_tab_v2';
 
 /** Returns a Script Property value, or null if it is not set. */
 function getProp_(name) {
@@ -101,13 +135,13 @@ function parseChatIdList_(raw) {
 }
 
 /**
- * Users from the Users table in Settings:
- * [{chatId, name, gopayName, active}]. Cached for USERS_CACHE_SECONDS.
- * Returns null if no main sheet is set up yet.
+ * Reads the whole Settings tab once and returns
+ *   { settings: {'name lowercase': 'value'}, users: [...], owners: [...], walletGroups: [...] }
+ * Cached for SETTINGS_CACHE_SECONDS. Returns null if there is no main sheet.
  */
-function getUsers_() {
+function loadSettingsTab_() {
   const cache = CacheService.getScriptCache();
-  const hit = cache.get(CACHE_KEY_USERS);
+  const hit = cache.get(CACHE_KEY_SETTINGS_TAB);
   if (hit !== null) return JSON.parse(hit);
 
   const ss = openMainSheet_();
@@ -115,17 +149,48 @@ function getUsers_() {
   const sheet = ss.getSheetByName(TAB.SETTINGS);
   if (sheet === null) throw new Error('Settings tab not found in the main sheet.');
 
-  const users = readTableByHeaders_(sheet, 'Chat ID').map(function (row) {
-    return {
-      chatId: String(row['chat id']).trim(),
-      name: String(row['display name'] || '').trim(),
-      gopayName: String(row['gopay name'] || '').trim(),
-      // Anything except "No" counts as active, so a blank cell doesn't lock anyone out.
-      active: String(row['active'] || '').trim().toLowerCase() !== 'no'
-    };
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(function (h) { return String(h).trim().toLowerCase(); });
+  const col = function (name) { return headers.indexOf(name); };
+  const cell = function (row, name) {
+    const i = col(name);
+    return i === -1 ? '' : String(row[i]).trim();
+  };
+
+  const result = { settings: {}, users: [], owners: [], walletGroups: [] };
+  values.slice(1).forEach(function (row) {
+    const key = cell(row, 'setting');
+    if (key !== '') result.settings[key.toLowerCase()] = cell(row, 'value');
+    if (cell(row, 'chat id') !== '') {
+      result.users.push({
+        chatId: cell(row, 'chat id'),
+        name: cell(row, 'display name'),
+        gopayName: cell(row, 'gopay name'),
+        // Anything except "No" counts as active, so a blank cell doesn't lock anyone out.
+        active: cell(row, 'active').toLowerCase() !== 'no'
+      });
+    }
+    if (cell(row, 'owners') !== '') result.owners.push(cell(row, 'owners'));
+    if (cell(row, 'wallet groups') !== '') result.walletGroups.push(cell(row, 'wallet groups'));
   });
-  cache.put(CACHE_KEY_USERS, JSON.stringify(users), USERS_CACHE_SECONDS);
-  return users;
+
+  cache.put(CACHE_KEY_SETTINGS_TAB, JSON.stringify(result), SETTINGS_CACHE_SECONDS);
+  return result;
+}
+
+/**
+ * Users from the Users table in Settings: [{chatId, name, gopayName, active}].
+ * Returns null if no main sheet is set up yet.
+ */
+function getUsers_() {
+  const tab = loadSettingsTab_();
+  return tab === null ? null : tab.users;
+}
+
+/** The Users-table entry for this chat ID, or null. */
+function getUserByChatId_(chatId) {
+  const users = getUsers_() || [];
+  return users.filter(function (u) { return u.chatId === String(chatId); })[0] || null;
 }
 
 /**
@@ -153,28 +218,41 @@ function isAllowedChat_(chatId) {
 }
 
 /**
- * Run from the editor after editing the Users table if you don't want to
- * wait up to 5 minutes for the change to take effect.
+ * Run from the editor after editing the Settings tab (users, settings) if
+ * you don't want to wait up to 5 minutes for the change to take effect.
  */
 function clearConfigCache() {
-  CacheService.getScriptCache().remove(CACHE_KEY_USERS);
-  console.log('Cache cleared. The bot will re-read the Users table on the next message.');
+  CacheService.getScriptCache().remove(CACHE_KEY_SETTINGS_TAB);
+  console.log('Cache cleared. The bot will re-read the Settings tab on the next message.');
 }
 
-/**
- * Settings key/value table → {'setting name in lowercase': 'value'}.
- * Values are returned as trimmed strings; callers convert them.
- */
+/** Settings key/value table → {'setting name in lowercase': 'value'}. */
 function getSettings_() {
-  const ss = openMainSheet_();
-  if (ss === null) return {};
-  const sheet = ss.getSheetByName(TAB.SETTINGS);
-  if (sheet === null) return {};
-  const settings = {};
-  readTableByHeaders_(sheet, 'Setting').forEach(function (row) {
-    settings[String(row['setting']).trim().toLowerCase()] = String(row['value']).trim();
-  });
-  return settings;
+  const tab = loadSettingsTab_();
+  return tab === null ? {} : tab.settings;
+}
+
+/** Default value for a setting from SETTING_ROWS ('' if unknown). */
+function settingDefault_(name) {
+  const row = SETTING_ROWS.filter(function (r) { return r[0].toLowerCase() === name.toLowerCase(); })[0];
+  return row ? row[1] : '';
+}
+
+/** A setting as a string; falls back to the default if missing or blank. */
+function getSetting_(name) {
+  const value = getSettings_()[name.toLowerCase()];
+  return value === undefined || value === '' ? settingDefault_(name) : value;
+}
+
+/** A whole-number setting ("5.000.000" and "5000000" both work). */
+function getSettingInt_(name) {
+  const digits = String(getSetting_(name)).replace(/[^\d]/g, '');
+  return digits === '' ? Number(settingDefault_(name)) : Number(digits);
+}
+
+/** A yes/no setting. */
+function getSettingYes_(name) {
+  return /^(yes|y|ya|true|on|1)$/i.test(String(getSetting_(name)).trim());
 }
 
 /** Writes one value into the Settings key/value table (row found by name). */

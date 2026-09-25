@@ -1,6 +1,11 @@
 /**
- * Telegram.gs — Telegram Bot API calls, plus webhook setup helpers you run
- * from the Apps Script editor (setWebhook, getWebhookInfo, deleteWebhook).
+ * Telegram.gs — Telegram Bot API calls, message formatting (HTML, Rp,
+ * spoilers), the auto-delete queue, and setup helpers you run from the
+ * Apps Script editor (setWebhook, getWebhookInfo, deleteWebhook,
+ * installCleanupTrigger).
+ *
+ * All messages use parse_mode HTML. Anything that comes from the user or
+ * the sheet (notes, names) must go through escapeHtml_ before sending.
  */
 
 /**
@@ -33,35 +38,208 @@ function tgCall_(method, payload) {
   return body.result;
 }
 
-/** Sends a text message. options can add e.g. reply_markup, parse_mode. */
+/** Sends an HTML message. options can add e.g. reply_markup. Returns the Message. */
 function sendMessage(chatId, text, options) {
-  const payload = Object.assign({ chat_id: chatId, text: text }, options || {});
+  const payload = Object.assign({
+    chat_id: chatId,
+    text: text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true
+  }, options || {});
   return tgCall_('sendMessage', payload);
 }
 
-/** Edits a message's text (e.g. after a button press). Phase 2. */
+/**
+ * Replaces a message's text (and buttons: pass reply_markup, or omit to
+ * remove them). "Message is not modified" is not treated as an error.
+ */
 function editMessage(chatId, messageId, text, options) {
-  throw new Error('editMessage is not implemented yet (Phase 2).');
+  const payload = Object.assign({
+    chat_id: chatId,
+    message_id: messageId,
+    text: text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true
+  }, options || {});
+  try {
+    return tgCall_('editMessageText', payload);
+  } catch (err) {
+    if (/message is not modified/i.test(err.message)) return null;
+    throw err;
+  }
 }
 
-/** Deletes a message, e.g. one containing a password. Phase 2. */
+/** Deletes a message. Returns true on success, false if Telegram refused. */
 function deleteMessage(chatId, messageId) {
-  throw new Error('deleteMessage is not implemented yet (Phase 2).');
+  try {
+    tgCall_('deleteMessage', { chat_id: chatId, message_id: messageId });
+    return true;
+  } catch (err) {
+    console.warn('deleteMessage ' + chatId + '/' + messageId + ': ' + err.message);
+    return false;
+  }
 }
 
-/** Acknowledges an inline button press. Phase 2. */
+/** Stops the loading spinner on a tapped button. Never throws. */
 function answerCallbackQuery(callbackQueryId, text) {
-  throw new Error('answerCallbackQuery is not implemented yet (Phase 2).');
+  try {
+    tgCall_('answerCallbackQuery', { callback_query_id: callbackQueryId, text: text || '' });
+  } catch (err) {
+    console.warn('answerCallbackQuery: ' + err.message);
+  }
 }
 
-/** Builds an inline keyboard from rows of {text, data}. Phase 2. */
-function buildInlineKeyboard_(rows) {
-  throw new Error('buildInlineKeyboard_ is not implemented yet (Phase 2).');
+/** Shows "typing…" in the chat (e.g. while waiting for Gemini). Never throws. */
+function sendTyping_(chatId) {
+  try {
+    tgCall_('sendChatAction', { chat_id: chatId, action: 'typing' });
+  } catch (err) {
+    console.warn('sendChatAction: ' + err.message);
+  }
 }
 
-/** Downloads a file (photo) sent to the bot. Phase 5 (OCR). */
+/**
+ * Builds reply_markup from rows of [label, callbackData] pairs:
+ *   keyboard_([[['✅ Yes', 'p1|y'], ['❌ No', 'p1|n']]])
+ */
+function keyboard_(rows) {
+  return {
+    inline_keyboard: rows.map(function (row) {
+      return row.map(function (b) { return { text: b[0], callback_data: b[1] }; });
+    })
+  };
+}
+
+/** Splits buttons into rows of `perRow`. */
+function chunk_(buttons, perRow) {
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += perRow) rows.push(buttons.slice(i, i + perRow));
+  return rows;
+}
+
+/** Downloads a file (photo) sent to the bot. OCR phase. */
 function getFile(fileId) {
   throw new Error('getFile is not implemented yet (OCR phase).');
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
+/** Makes user/sheet text safe inside an HTML message. */
+function escapeHtml_(text) {
+  return String(text === null || text === undefined ? '' : text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** 1250000 → "Rp1.250.000", -50000 → "−Rp50.000" */
+function formatRp_(amount) {
+  const n = Math.round(Number(amount) || 0);
+  const digits = String(Math.abs(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return (n < 0 ? '−' : '') + 'Rp' + digits;
+}
+
+/** "+Rp1.000.000" / "−Rp50.000" for balance changes. */
+function formatRpSigned_(amount) {
+  return (Number(amount) > 0 ? '+' : '') + formatRp_(amount);
+}
+
+/**
+ * THE spoiler helper: wraps already-escaped HTML in <tg-spoiler> when the
+ * "Hide amounts" setting is Yes. Pass hide to override (used by tests).
+ * Used for amounts in /saldo, /inv, /open and /report — not in previews.
+ */
+function spoiler_(html, hide) {
+  const on = hide === undefined ? getSettingYes_(SETTING.HIDE_AMOUNTS) : hide;
+  return on ? '<tg-spoiler>' + html + '</tg-spoiler>' : html;
+}
+
+/** An Rp amount through the spoiler helper. */
+function money_(amount, hide) {
+  return spoiler_(formatRp_(amount), hide);
+}
+
+/** Date → "24 Sep 2026" in Asia/Jakarta. */
+function formatDate_(date) {
+  return Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), 'd MMM yyyy');
+}
+
+// ---------------------------------------------------------------------------
+// Auto-delete queue (used by /saldo)
+// ---------------------------------------------------------------------------
+// The queue lives in CacheService (fast) with a Script Properties backup
+// (survives cache eviction). cleanupMessages() runs every minute from a
+// time trigger and returns immediately when the queue is empty.
+
+const DELETE_QUEUE_CACHE_KEY = 'delete_queue';
+const MAX_DELETE_DELAY_SECONDS = 169200; // 47h: Telegram allows deleting for 48h
+
+function readDeleteQueue_() {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get(DELETE_QUEUE_CACHE_KEY);
+  if (hit !== null) return JSON.parse(hit);
+  const saved = getProp_(PROP.DELETE_QUEUE);
+  const queue = saved ? JSON.parse(saved) : [];
+  cache.put(DELETE_QUEUE_CACHE_KEY, JSON.stringify(queue), 21600);
+  return queue;
+}
+
+function writeDeleteQueue_(queue) {
+  const json = JSON.stringify(queue);
+  PropertiesService.getScriptProperties().setProperty(PROP.DELETE_QUEUE, json);
+  CacheService.getScriptCache().put(DELETE_QUEUE_CACHE_KEY, json, 21600);
+}
+
+/** Queues a message to be deleted after `seconds` (capped at 47 hours). */
+function scheduleDelete_(chatId, messageId, seconds) {
+  const delay = Math.min(Math.max(0, Number(seconds) || 0), MAX_DELETE_DELAY_SECONDS);
+  withScriptLock_(function () {
+    const queue = readDeleteQueue_();
+    queue.push({ c: String(chatId), m: messageId, at: Date.now() + delay * 1000 });
+    writeDeleteQueue_(queue);
+  });
+}
+
+/**
+ * Time trigger handler (every minute). Deletes messages whose time has come.
+ * Exits right away when the queue is empty, to save trigger quota.
+ */
+function cleanupMessages() {
+  if (CacheService.getScriptCache().get(DELETE_QUEUE_CACHE_KEY) === '[]') return;
+
+  let due = [];
+  withScriptLock_(function () {
+    const queue = readDeleteQueue_();
+    if (queue.length === 0) return;
+    const now = Date.now();
+    due = queue.filter(function (item) { return item.at <= now; });
+    if (due.length > 0) {
+      writeDeleteQueue_(queue.filter(function (item) { return item.at > now; }));
+    }
+  });
+
+  due.forEach(function (item) {
+    if (!deleteMessage(item.c, item.m)) {
+      // Already deleted by hand, or older than 48h: log and move on.
+      try {
+        writeLogRow_('WARN', 'cleanupMessages', 'Could not delete message ' + item.m + ' in chat ' + item.c);
+      } catch (err) {
+        console.warn('cleanupMessages log: ' + err.message);
+      }
+    }
+  });
+}
+
+/**
+ * Run once from the editor: creates the every-minute trigger for
+ * cleanupMessages (removing any old copy first, so there's never two).
+ */
+function installCleanupTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'cleanupMessages'; })
+    .forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('cleanupMessages').timeBased().everyMinutes(1).create();
+  console.log('PASS: cleanup trigger installed. cleanupMessages will run every minute.');
 }
 
 // ---------------------------------------------------------------------------
@@ -97,10 +275,6 @@ function getWebhookInfo() {
   const key = getProp_(PROP.WEBHOOK_KEY);
   if (key !== null && info.url) info.url = info.url.split(key).join('***');
   console.log(JSON.stringify(info, null, 2));
-  if (info.last_error_message && /302/.test(info.last_error_message)) {
-    console.log('Note: "302" errors are normal for Apps Script (it redirects). ' +
-      'Messages are still delivered.');
-  }
 }
 
 /** Stops Telegram from sending updates to this web app. */

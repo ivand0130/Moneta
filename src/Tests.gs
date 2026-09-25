@@ -128,12 +128,14 @@ function testSendHello() {
 
 /** Fixed wallets/categories so parser tests don't depend on the sheet. */
 function testCtx_() {
-  const w = function (name, type) { return { name: name, type: type || 'Cash', active: true }; };
+  const w = function (name, group, type) { return { name: name, group: group, type: type || 'Cash', active: true }; };
   const c = function (name, type, keywords) { return { name: name, type: type, keywords: keywords || [] }; };
   return {
     now: new Date(2026, 8, 25, 10, 30, 0), // 25 Sep 2026 10:30
-    wallets: [w('BCA'), w('GoPay'), w('Cash'), w('IPOT'), w('Jago'), w('Bank Jago Syariah'),
-      w('Saham', 'Investment'), { name: 'OldBank', type: 'Cash', active: false }],
+    wallets: [w('BCA', 'Spending'), w('GoPay', 'Spending'), w('Cash', 'Spending'), w('IPOT', 'Investment'),
+      w('Jago', 'Savings'), w('Bank Jago Syariah', 'Savings'), w('Saham', 'Investment', 'Investment'),
+      { name: 'OldBank', group: 'Spending', type: 'Cash', active: false }],
+    investmentGroups: ['investment'],
     categories: [
       c('Food', 'Expense', ['makan', 'kopi', 'kfc', 'gofood']),
       c('Transport', 'Expense', ['bensin', 'parkir', 'gojek']),
@@ -237,7 +239,20 @@ function testParser() {
     ['transfer 1jt BCA', { type: 'Transfer', wallet: 'BCA', toWallet: null }],
     ['transfer 1jt BCA ke GoPay admin 2.5rb', { ok: false, error: 'transfer_extras' }],
     ['transfer 1jt BCA ke IPOT, sampai 997.500', { ok: false, error: 'transfer_extras' }],
-    ['transfer 1jt BCA ke BCA', { ok: false, error: 'same_wallet' }]
+    ['transfer 1jt BCA ke BCA', { ok: false, error: 'same_wallet' }],
+    // Reported cases: yesterday spellings, "tgl 10", investment wallets
+    ['25rb parkir kmrn', { date: '2026-9-24', note: 'parkir' }],
+    ['25rb parkir kmarin', { date: '2026-9-24' }],
+    ['Parkir Kemarin 25rb', { date: '2026-9-24', note: 'Parkir', category: 'Transport' }],
+    ['25rb parkir tgl 10', { date: '2026-9-10', dateNeedsConfirm: true, dateText: 'tgl 10', note: 'parkir' }],
+    ['25rb parkir tanggal 30', { date: '2026-8-30', dateNeedsConfirm: true }],
+    ['25rb parkir tgl 25', { date: '2026-9-25' }],
+    ['25rb parkir tgl 31', { date: '2026-8-31' }],
+    ['25rb parkir tgl 20 sep', { date: '2026-9-20', dateNeedsConfirm: false }],
+    ['50rb makan IPOT', { ok: false, error: 'investment_wallet' }],
+    ['transfer 1jt BCA ke IPOT', { ok: true, type: 'Transfer', wallet: 'BCA', toWallet: 'IPOT' }],
+    ['transfer 1jt BCA ke Saham', { ok: false, error: 'investment_wallet' }],
+    ['50rb makan Jago', { ok: true, wallet: 'Jago' }]
   ];
   let pass = 0;
   cases.forEach(function (c) {
@@ -246,7 +261,9 @@ function testParser() {
   // Edit → Date step
   if (checkCase_('parseDateOnly_ kemarin', { v: parseDateOnly_('kemarin', ctx.now) }, { v: '2026-9-24' })) pass++;
   if (checkCase_('parseDateOnly_ rejects extra words', { v: parseDateOnly_('kemarin sore', ctx.now) }, { v: null })) pass++;
-  const total = cases.length + 2;
+  if (checkCase_('parseDateOnly_ bare day', { v: parseDateOnly_('10', ctx.now) }, { v: '2026-9-10' })) pass++;
+  if (checkCase_('nearest past day across new year', { v: nearestPastDay_(10, new Date(2026, 0, 5)) }, { v: '2025-12-10' })) pass++;
+  const total = cases.length + 4;
   console.log((pass === total ? 'PASS' : 'FAIL') + ': testParser ' + pass + '/' + total);
   return pass === total;
 }
@@ -282,17 +299,19 @@ function testSpoiler() {
   return pass === 7;
 }
 
-/** Password hashing (does not touch your real password). */
+/** Password rules, and that the Settings row can be read (the value is not logged). */
 function testPassword() {
   let pass = 0;
   const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
-  const stored = 'salt123:' + hashPassword_('9876', 'salt123');
-  t('default 0000 accepted while unset', passwordMatches_('0000', null), true);
-  t('other password rejected while unset', passwordMatches_('1111', null), false);
-  t('correct password matches', passwordMatches_('9876', stored), true);
-  t('wrong password rejected', passwordMatches_('0000', stored), false);
-  t('stored value does not contain the password', stored.indexOf('9876') === -1, true);
-  console.log((pass === 5 ? 'PASS' : 'FAIL') + ': testPassword ' + pass + '/5');
+  t('digits accepted', isDigitsOnly_('0123'), true);
+  t('space rejected', isDigitsOnly_('12 34'), false);
+  t('letters rejected', isDigitsOnly_('12a4'), false);
+  t('/changepass compare: same entry matches', hashPassword_('9876', 's') === hashPassword_('9876', 's'), true);
+  t('/changepass compare: different entry fails', hashPassword_('9876', 's') === hashPassword_('9875', 's'), false);
+  const current = readSheetPassword_();
+  t('Settings → Password is readable and numbers only', current.error === undefined, true);
+  console.log((pass === 6 ? 'PASS' : 'FAIL') + ': testPassword ' + pass + '/6' +
+    (current.value === DEFAULT_PASSWORD ? ' (still the default 0000)' : ''));
 }
 
 /** Adds a queue entry and removes it again (nothing is deleted in Telegram). */

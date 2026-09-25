@@ -17,7 +17,6 @@ const PROP = {
   MAIN_SHEET_ID: 'MAIN_SHEET_ID',       // Main Google Sheet ID (set by createTemplate)
   ARCHIVE_FOLDER_ID: 'ARCHIVE_FOLDER_ID',
   TEMPLATE_ID: 'TEMPLATE_ID',           // Clean template sheet (set by createTemplate)
-  PASSWORD_HASH: 'PASSWORD_HASH',       // "salt:hash", set by /changepass (unset = 0000)
   RECENT_UPDATES: 'RECENT_UPDATES',     // Written by the bot; see showRecentUpdates()
   DELETE_QUEUE: 'DELETE_QUEUE'          // Backup of the auto-delete queue
 };
@@ -71,7 +70,10 @@ const SETTING = {
   LARGE_AMOUNT: 'Large Amount Threshold',
   DUPLICATE_MINUTES: 'Duplicate Window (minutes)',
   HIDE_AMOUNTS: 'Hide amounts',
-  SALDO_DELETE_SECONDS: 'Saldo auto-delete (seconds)'
+  SALDO_DELETE_SECONDS: 'Saldo auto-delete (seconds)',
+  PASSWORD: 'Password',
+  SPENDING_GROUPS: 'Spending Wallet Groups',
+  INVESTMENT_GROUPS: 'Investment Wallet Groups'
 };
 
 /**
@@ -87,6 +89,9 @@ const SETTING_ROWS = [
   [SETTING.DUPLICATE_MINUTES, '5', 'Warn if the same type + amount + note was logged within this many minutes.'],
   [SETTING.HIDE_AMOUNTS, 'Yes', 'Yes = amounts in /saldo, /inv, /open, /report are hidden until tapped.'],
   [SETTING.SALDO_DELETE_SECONDS, '60', 'Delete the /saldo reply after this many seconds. 0 = never. Max 169200 (47 hours).'],
+  [SETTING.PASSWORD, '0000', 'Password for /saldo. Numbers only. Change it here or with /changepass. 0000 = default (the bot reminds you to change it).'],
+  [SETTING.SPENDING_GROUPS, 'Spending', 'Wallet groups offered as buttons for expenses (comma-separated).'],
+  [SETTING.INVESTMENT_GROUPS, 'Investment', 'Wallet groups that hold investment money: not usable for expenses/income, hidden in /saldo (shown in /saldo all). Transfers are fine.'],
   ['Daily Reminder Time', '08:00', 'Hour for the daily hutang/piutang reminder (HH:MM).'],
   ['Weekly Reminder Day', 'Monday', 'Day for the weekly summary reminder.'],
   ['Monthly Reminder Date', '1', 'Day of month for the monthly reminder.'],
@@ -137,11 +142,13 @@ function parseChatIdList_(raw) {
 /**
  * Reads the whole Settings tab once and returns
  *   { settings: {'name lowercase': 'value'}, users: [...], owners: [...], walletGroups: [...] }
- * Cached for SETTINGS_CACHE_SECONDS. Returns null if there is no main sheet.
+ * Cached for SETTINGS_CACHE_SECONDS; fresh = true skips the cache (and
+ * refreshes it). The Password is never kept in the cache.
+ * Returns null if there is no main sheet.
  */
-function loadSettingsTab_() {
+function loadSettingsTab_(fresh) {
   const cache = CacheService.getScriptCache();
-  const hit = cache.get(CACHE_KEY_SETTINGS_TAB);
+  const hit = fresh ? null : cache.get(CACHE_KEY_SETTINGS_TAB);
   if (hit !== null) return JSON.parse(hit);
 
   const ss = openMainSheet_();
@@ -174,7 +181,9 @@ function loadSettingsTab_() {
     if (cell(row, 'wallet groups') !== '') result.walletGroups.push(cell(row, 'wallet groups'));
   });
 
-  cache.put(CACHE_KEY_SETTINGS_TAB, JSON.stringify(result), SETTINGS_CACHE_SECONDS);
+  const cached = JSON.parse(JSON.stringify(result));
+  delete cached.settings[SETTING.PASSWORD.toLowerCase()];
+  cache.put(CACHE_KEY_SETTINGS_TAB, JSON.stringify(cached), SETTINGS_CACHE_SECONDS);
   return result;
 }
 
@@ -248,6 +257,13 @@ function getSetting_(name) {
 function getSettingInt_(name) {
   const digits = String(getSetting_(name)).replace(/[^\d]/g, '');
   return digits === '' ? Number(settingDefault_(name)) : Number(digits);
+}
+
+/** A comma-separated setting as a lowercase list ("Spending, Daily" → ['spending', 'daily']). */
+function getSettingList_(name) {
+  return String(getSetting_(name)).split(',')
+    .map(function (s) { return s.trim().toLowerCase(); })
+    .filter(String);
 }
 
 /** A yes/no setting. */

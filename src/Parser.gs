@@ -9,7 +9,8 @@
  *       note: 'makan siang di KFC', date: Date, category: 'Food',
  *       categoryHow: 'keyword', ... }
  *
- * ctx = { wallets: [{name, type, active}], categories: [{name, type, keywords}], now: Date }
+ * ctx = { wallets: [{name, type, group, active}], categories: [{name, type, keywords}],
+ *         investmentGroups: ['investment'], now: Date }
  *
  * The word lists below are the bot's own vocabulary (how people phrase a
  * message), not user data, so they live in code.
@@ -41,6 +42,7 @@ const WALLET_CONNECTORS = ['dari', 'ke', 'pakai', 'pake', 'via', 'lewat', 'from'
 const DEST_CONNECTORS = ['ke', 'to', '->', '→'];
 const SOURCE_CONNECTORS = ['dari', 'from'];
 const DATE_FILLERS = ['tgl', 'tanggal', 'on'];
+const YESTERDAY_WORDS = ['kemarin', 'kmarin', 'kmrn', 'kmrin', 'kemaren', 'kmren', 'yesterday'];
 
 /** Lowercase, without surrounding punctuation. */
 function cleanToken_(raw) {
@@ -112,6 +114,16 @@ function dayWithTime_(y, m, d, now) {
   return new Date(y, m, d, now.getHours(), now.getMinutes(), now.getSeconds());
 }
 
+/** The most recent date with this day of the month, today or earlier ("tgl 31" on 25 Sep → 31 Aug). */
+function nearestPastDay_(day, now) {
+  for (let back = 0; back < 12; back++) {
+    const month = new Date(now.getFullYear(), now.getMonth() - back, 1); // handles Jan → Dec of last year
+    const date = makeDate_(month.getFullYear(), month.getMonth(), day, now);
+    if (date && date.getTime() <= now.getTime() + 60000) return date;
+  }
+  return null;
+}
+
 /** Validates a day/month/year and returns a Date, or null if it doesn't exist. */
 function makeDate_(y, m, d, now) {
   const date = dayWithTime_(y, m, d, now);
@@ -150,9 +162,14 @@ function extractDate_(tokens, now) {
     const next2 = tokens[i + 2] ? tokens[i + 2].clean : '';
     const next3 = tokens[i + 3] ? tokens[i + 3].clean : '';
 
-    if (t.clean === 'kemarin' || t.clean === 'yesterday') {
+    if (YESTERDAY_WORDS.indexOf(t.clean) !== -1) {
       mark(i, 1);
       found.push({ date: dayWithTime_(now.getFullYear(), now.getMonth(), now.getDate() - 1, now) });
+    } else if ((t.clean === 'tgl' || t.clean === 'tanggal') && /^\d{1,2}$/.test(next) &&
+        MONTH_WORDS[next2] === undefined && Number(next) >= 1 && Number(next) <= 31) {
+      // "tgl 10" without a month: the nearest 10th that is not in the future (confirmed by the user).
+      mark(i, 2);
+      found.push({ date: nearestPastDay_(Number(next), now), needsConfirm: true, text: t.raw + ' ' + tokens[i + 1].raw });
     } else if (t.clean === 'today' || (t.clean === 'hari' && next === 'ini')) {
       mark(i, t.clean === 'today' ? 1 : 2);
       found.push({ date: new Date(now.getTime()) });
@@ -292,7 +309,11 @@ function parseTransaction_(text, ctx) {
     return { ok: false, error: 'same_wallet', wallet: mentions[0].wallet.name };
   }
 
-  const invest = mentions.filter(function (m) { return m.wallet.type === 'Investment'; })[0];
+  // Investment wallets: never for expenses/income. Transfers may use investment-group cash
+  // wallets (e.g. BCA ke IPOT) but not Wallet Type = Investment (purchases come later).
+  const invest = mentions.filter(function (m) {
+    return isTransfer ? m.wallet.type === 'Investment' : isInvestmentWallet_(m.wallet, ctx.investmentGroups);
+  })[0];
   if (invest) return { ok: false, error: 'investment_wallet', wallet: invest.wallet.name };
 
   const amounts = extractAmounts_(tokens);
@@ -377,6 +398,8 @@ function parseTransaction_(text, ctx) {
     amountText: amount.text,
     date: dateResult.date || new Date(now.getTime()),
     dateGiven: !!dateResult.date,
+    dateNeedsConfirm: !!dateResult.needsConfirm,
+    dateText: dateResult.text || '',
     wallet: wallet,
     toWallet: toWallet,
     category: category,
@@ -391,6 +414,9 @@ function parseTransaction_(text, ctx) {
  * step. Returns a Date or null.
  */
 function parseDateOnly_(text, now) {
+  if (/^\s*\d{1,2}\s*$/.test(text) && Number(text) >= 1 && Number(text) <= 31) {
+    return nearestPastDay_(Number(text), now); // just "10" → the nearest past 10th
+  }
   const tokens = String(text).trim().split(/\s+/).filter(String).map(function (raw) {
     return { raw: raw, clean: cleanToken_(raw), used: false };
   });

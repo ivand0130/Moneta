@@ -90,7 +90,13 @@ function cancelRow_(p) {
 /** Sheet data every transaction step needs. */
 function loadCtx_() {
   const ss = openMainSheet_();
-  return { ss: ss, wallets: loadWallets_(ss), categories: loadCategories_(ss) };
+  return {
+    ss: ss,
+    wallets: loadWallets_(ss),
+    categories: loadCategories_(ss),
+    investmentGroups: getSettingList_(SETTING.INVESTMENT_GROUPS),
+    spendingGroups: getSettingList_(SETTING.SPENDING_GROUPS)
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +107,9 @@ function loadCtx_() {
 function startTransaction_(message) {
   const chatId = String(message.chat.id);
   const ctx = loadCtx_();
-  const parsed = parseTransaction_(message.text, { wallets: ctx.wallets, categories: ctx.categories, now: new Date() });
+  const parsed = parseTransaction_(message.text, {
+    wallets: ctx.wallets, categories: ctx.categories, investmentGroups: ctx.investmentGroups, now: new Date()
+  });
   if (!parsed.ok) {
     sendMessage(chatId, parseErrorText_(parsed));
     return;
@@ -113,6 +121,8 @@ function startTransaction_(message) {
     amountReason: parsed.amountReason,
     amountText: parsed.amountText,
     date: parsed.date.getTime(),
+    dateNeedsConfirm: parsed.dateNeedsConfirm,
+    dateText: parsed.dateText,
     wallet: parsed.wallet,
     walletHow: parsed.wallet ? 'mentioned' : '',
     toWallet: parsed.toWallet,
@@ -144,6 +154,7 @@ function advanceTrx_(p, ctx) {
   const d = p.d;
   p.awaitText = null;
   if (d.amountOptions) return askAmount_(p);
+  if (d.dateNeedsConfirm) return askDateConfirm_(p);
 
   if (d.type === 'Transfer') {
     if (!findWallet_(cashWallets_(ctx.wallets), d.wallet)) return askWallet_(p, ctx, 'from');
@@ -157,10 +168,11 @@ function advanceTrx_(p, ctx) {
       d.category = null;
       return askCategory_(p, ctx);
     }
-    if (!findWallet_(cashWallets_(ctx.wallets), d.wallet)) {
+    const usable = everydayWallets_(ctx.wallets, ctx.investmentGroups);
+    if (!findWallet_(usable, d.wallet)) {
       // Wallet rule 2: the category's default wallet, shown in the preview.
       const cat = ctx.categories.filter(function (c) { return c.name === d.category; })[0];
-      const def = cat ? findWallet_(cashWallets_(ctx.wallets), cat.defaultWallet) : null;
+      const def = cat ? findWallet_(usable, cat.defaultWallet) : null;
       if (!def) return askWallet_(p, ctx, 'wallet'); // Wallet rule 3: ask.
       d.wallet = def.name;
       d.walletHow = 'default';
@@ -175,6 +187,13 @@ function advanceTrx_(p, ctx) {
 
   showStep_(p, buildPreviewText_(p, ctx, 'Save?'),
     [[btn_(p, '✅ Yes', 'y'), btn_(p, '❌ No', 'n'), btn_(p, '✏️ Edit', 'e')]]);
+}
+
+/** "tgl 10" was read as the nearest past 10th: confirm it or pick another date. */
+function askDateConfirm_(p) {
+  const label = formatDate_(p.d.date);
+  showStep_(p, summaryLine_(p) + '\n📅 I read "' + escapeHtml_(p.d.dateText) + '" as <b>' + label + '</b>. Is that right?',
+    [[btn_(p, '✅ ' + label, 'dok'), btn_(p, '✏️ Other date', 'ef', 'date')], cancelRow_(p)]);
 }
 
 const AMOUNT_REASONS = {
@@ -192,12 +211,23 @@ function askAmount_(p) {
     '. Which did you mean?', rows);
 }
 
-/** which: 'wallet' (expense/income), 'from' or 'to' (transfer). */
+/**
+ * which: 'wallet' (expense/income), 'from' or 'to' (transfer).
+ * Expense buttons: wallets in the Spending Wallet Groups. Income: every
+ * non-investment cash wallet. Transfers: every cash wallet (e.g. BCA → IPOT).
+ */
 function askWallet_(p, ctx, which, warning) {
   const exclude = which === 'to' ? p.d.wallet : (which === 'from' ? p.d.toWallet : null);
-  p.opts = cashWallets_(ctx.wallets)
-    .filter(function (w) { return w.name !== exclude; })
-    .map(function (w) { return w.name; });
+  let list;
+  if (which !== 'wallet') {
+    list = cashWallets_(ctx.wallets);
+  } else if (p.d.type === 'Expense') {
+    list = spendingWallets_(ctx.wallets, ctx.investmentGroups, ctx.spendingGroups);
+    if (list.length === 0) list = everydayWallets_(ctx.wallets, ctx.investmentGroups); // no match: don't strand the user
+  } else {
+    list = everydayWallets_(ctx.wallets, ctx.investmentGroups);
+  }
+  p.opts = list.filter(function (w) { return w.name !== exclude; }).map(function (w) { return w.name; });
   const question = which === 'from' ? 'From which wallet?' : which === 'to' ? 'To which wallet?' :
     (p.d.type === 'Income' ? 'Into which wallet?' : 'Paid from which wallet?');
   const rows = chunk_(p.opts.map(function (n, i) { return btn_(p, n, which === 'to' ? 'tw' : 'w', i); }), 3);
@@ -272,13 +302,13 @@ function showEditMenu_(p, ctx) {
        [btn_(p, 'Date', 'ef', 'date'), btn_(p, 'Note', 'ef', 'note'), btn_(p, 'Type', 'ef', 'type')]]
     : [[btn_(p, 'Amount', 'ef', 'amount'), btn_(p, 'Category', 'ef', 'category'), btn_(p, 'Wallet', 'ef', 'wallet')],
        [btn_(p, 'Date', 'ef', 'date'), btn_(p, 'Note', 'ef', 'note'), btn_(p, 'Type', 'ef', 'type')]];
-  rows.push([btn_(p, '⬅️ Back', 'back')]);
+  rows.push([btn_(p, '⬅️ Back', 'back'), btn_(p, '❌ Cancel entry', 'n')]);
   showStep_(p, buildPreviewText_(p, ctx, '✏️ What do you want to change?'), rows);
 }
 
 const EDIT_PROMPTS = {
   amount: 'Send the new amount, e.g. <code>75rb</code>.',
-  date: 'Send the new date, e.g. <code>kemarin</code>, <code>20/09</code> or <code>5 okt</code>.',
+  date: 'Send the new date, e.g. <code>kemarin</code>, <code>10</code> (the last 10th), <code>20/09</code> or <code>5 okt</code>.',
   note: 'Send the new note.'
 };
 
@@ -304,15 +334,20 @@ function trxCallback_(p, action, arg, user) {
       d.unknownTag = null;
       if (d.walletHow === 'default') { d.wallet = null; d.walletHow = ''; } // re-apply the new category's default
       break;
+    case 'dok':
+      d.dateNeedsConfirm = false;
+      break;
     case 'today':
       d.date = Date.now();
+      d.dateNeedsConfirm = false;
       break;
     case 'e':
       return showEditMenu_(p, ctx);
     case 'ef':
       if (EDIT_PROMPTS[arg]) {
         p.awaitText = arg;
-        return showStep_(p, summaryLine_(p) + '\n' + EDIT_PROMPTS[arg], [[btn_(p, '⬅️ Back', 'back')]]);
+        return showStep_(p, summaryLine_(p) + '\n' + EDIT_PROMPTS[arg],
+          [[btn_(p, '⬅️ Back', 'back'), btn_(p, '❌ Cancel entry', 'n')]]);
       }
       if (arg === 'category') return askCategory_(p, ctx);
       if (arg === 'wallet') return askWallet_(p, ctx, d.type === 'Transfer' ? 'from' : 'wallet');
@@ -320,7 +355,7 @@ function trxCallback_(p, action, arg, user) {
       if (arg === 'type') {
         return showStep_(p, summaryLine_(p) + '\nChange the type to:',
           [[btn_(p, '🧾 Expense', 't', 'Expense'), btn_(p, '💵 Income', 't', 'Income'), btn_(p, '🔁 Transfer', 't', 'Transfer')],
-           [btn_(p, '⬅️ Back', 'back')]]);
+           [btn_(p, '⬅️ Back', 'back'), btn_(p, '❌ Cancel entry', 'n')]]);
       }
       break;
     case 't':
@@ -379,6 +414,7 @@ function handlePendingText_(p, message) {
       return;
     }
     d.date = date.getTime();
+    d.dateNeedsConfirm = false;
   } else if (p.awaitText === 'note') {
     d.note = text.slice(0, 200);
   }

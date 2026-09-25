@@ -27,26 +27,56 @@ function findWallet_(wallets, name) {
   return wallets.filter(function (w) { return w.name.toLowerCase() === String(name).toLowerCase(); })[0] || null;
 }
 
-/** Active cash wallets (the ones you can spend from / transfer between). */
+/** Active cash wallets: the ones you can transfer between (incl. e.g. IPOT cash). */
 function cashWallets_(wallets) {
   return wallets.filter(function (w) { return w.active && w.type === 'Cash'; });
 }
 
 /**
- * /saldo text. filter (optional) matches a wallet group or an owner name.
+ * An investment wallet: Wallet Type = Investment (Saham, Emas…), or its
+ * group is listed in the "Investment Wallet Groups" setting (e.g. IPOT).
+ * investmentGroups is a lowercase list.
+ */
+function isInvestmentWallet_(w, investmentGroups) {
+  return w.type === 'Investment' || (investmentGroups || []).indexOf(String(w.group || '').toLowerCase()) !== -1;
+}
+
+/** Wallets usable for expenses and income: active cash wallets that aren't investment wallets. */
+function everydayWallets_(wallets, investmentGroups) {
+  return cashWallets_(wallets).filter(function (w) { return !isInvestmentWallet_(w, investmentGroups); });
+}
+
+/** Wallets offered as buttons for an expense: everyday wallets in the "Spending Wallet Groups". */
+function spendingWallets_(wallets, investmentGroups, spendingGroups) {
+  return everydayWallets_(wallets, investmentGroups).filter(function (w) {
+    return spendingGroups.indexOf(w.group.toLowerCase()) !== -1;
+  });
+}
+
+/**
+ * /saldo text. filter (optional, any case):
+ *   ''          → all wallets except investment wallets
+ *   'all'       → everything
+ *   wallet name → that wallet; otherwise a wallet group or an owner name
  * Every amount goes through money_() (the spoiler helper).
  * Returns { text } or { error } if the filter matches nothing.
  */
-function buildSaldoText_(wallets, filter) {
+function buildSaldoText_(wallets, filter, investmentGroups) {
   let list = wallets.filter(function (w) { return w.active; });
   const f = String(filter || '').trim().toLowerCase();
-  if (f !== '') {
-    list = list.filter(function (w) { return w.group.toLowerCase() === f || w.owner.toLowerCase() === f; });
+  const hidingInvestments = f === '';
+  if (hidingInvestments) {
+    list = list.filter(function (w) { return !isInvestmentWallet_(w, investmentGroups); });
+  } else if (f !== 'all' && f !== 'semua') {
+    const by = function (field) { return list.filter(function (w) { return w[field].toLowerCase() === f; }); };
+    const byName = by('name');
+    const byGroup = by('group');
+    list = byName.length ? byName : (byGroup.length ? byGroup : by('owner'));
     if (list.length === 0) {
-      const groups = unique_(wallets.map(function (w) { return w.group; }));
-      const owners = unique_(wallets.map(function (w) { return w.owner; }));
-      return { error: 'No wallets match "' + escapeHtml_(filter) + '".\nGroups: ' + escapeHtml_(groups.join(', ')) +
-        '\nOwners: ' + escapeHtml_(owners.join(', ')) };
+      const active = wallets.filter(function (w) { return w.active; });
+      const names = function (field) { return escapeHtml_(unique_(active.map(function (w) { return w[field]; })).join(', ')); };
+      return { error: 'No wallet, group or owner called "' + escapeHtml_(filter) + '".\nWallets: ' + names('name') +
+        '\nGroups: ' + names('group') + '\nOwners: ' + names('owner') + '\nOr use <code>/saldo all</code>.' };
     }
   }
 
@@ -74,6 +104,7 @@ function buildSaldoText_(wallets, filter) {
   }
 
   lines.push('', '<b>Total: </b>' + money_(total));
+  if (hidingInvestments) lines.push('<i>Investments not included. Use /saldo all to see everything.</i>');
   return { text: lines.join('\n') };
 }
 

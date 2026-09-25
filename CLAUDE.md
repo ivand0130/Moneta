@@ -58,8 +58,12 @@ Bot replies in English; user input may be English or Bahasa Indonesia.
   them at runtime so edits in the sheet change the bot's behavior.
 - Find columns by header name, so adding or reordering columns doesn't break
   the bot.
-- Secrets (bot token, Gemini key, password hash, main sheet ID, archive
-  folder ID, template ID) live in Script Properties.
+- Secrets (bot token, Gemini key, main sheet ID, archive folder ID,
+  template ID) live in Script Properties.
+- Exception (owner's decision, 2026-09-25): the /saldo password lives in the
+  Settings tab ("Password" row, numbers only, plain text) so it can be reset
+  in the sheet. Read it fresh every time, never cache it, and delete every
+  message that contains it. Do not move it back to a hash.
 - Never save anything unclear: always show a preview and wait for Yes.
 - Transfers and investment purchases never count as income or expense.
   Adjustments are excluded from income/expense totals.

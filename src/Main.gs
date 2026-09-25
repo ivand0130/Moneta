@@ -177,6 +177,7 @@ function handleText_(message) {
         else sendMessage(chatId, buildWalletListText_(loadWallets_(openMainSheet_())));
         return;
       case '/category':
+      case '/cat':
         if (sub === 'add') startCategoryAdd_(chatId, args.slice(3).trim());
         else sendMessage(chatId, buildCategoryListText_(loadCategories_(openMainSheet_())));
         return;
@@ -214,7 +215,7 @@ function buildHelpText_() {
     '• <code>50rb makan siang di KFC</code> → expense',
     '• <code>+5jt gaji BCA</code> or <code>gaji 5jt BCA</code> → income',
     '• <code>transfer 1jt BCA ke GoPay</code> → transfer between your wallets',
-    '• <code>25rb parkir kemarin</code>, <code>… 20/09</code>, <code>… 5 okt</code> → another date',
+    '• <code>25rb parkir kemarin</code> (or kmrn), <code>… tgl 10</code>, <code>… 20/09</code>, <code>… 5 okt</code> → another date',
     '• <code>30rb obat #health</code> → choose the category yourself',
     '',
     'Amounts: 50000 · 50.000 · 50k · 50rb · 1.5jt · 2juta',
@@ -222,10 +223,11 @@ function buildHelpText_() {
     'Nothing is saved until you tap ✅ Yes on the preview. ✏️ Edit changes any part.',
     '',
     '📋 <b>Commands</b>',
-    '/saldo — balances (password). Filter: <code>/saldo spending</code>, <code>/saldo me</code>',
+    '/saldo — balances (password), without investments. <code>/saldo all</code> includes them',
+    '   One wallet, group or owner: <code>/saldo bca</code>, <code>/saldo spending</code>, <code>/saldo me</code>',
     '/undo — delete your last entry',
     '/wallet — list wallets · <code>/wallet add Jenius</code>',
-    '/category — list categories · <code>/category add Pets</code>',
+    '/category or /cat — list categories · <code>/cat add Pets</code>',
     '/changepass — change the /saldo password (default 0000)',
     '/cancel — stop what you\'re doing',
     '/help — this guide'

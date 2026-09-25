@@ -1,10 +1,12 @@
 /**
- * Security.gs — password hashing, the password prompt for /saldo,
- * /changepass, deleting password messages, wrong-password lockout.
+ * Security.gs — the /saldo password, /changepass, deleting password
+ * messages, wrong-password lockout.
  *
- * One password for both users. Stored in Script Properties as
- * "salt:hash" (SHA-256), never in plain text. Until /changepass is used the
- * password is the default 0000, and /saldo reminds you to change it.
+ * One password for both users, kept in the Settings tab ("Password" row,
+ * numbers only) so you can reset it in the sheet if you forget it. It is
+ * read fresh from the sheet every time (never from the cache). Default 0000;
+ * /saldo reminds you to change it. Every message containing a password is
+ * deleted right after it's read.
  */
 
 const DEFAULT_PASSWORD = '0000';
@@ -12,21 +14,41 @@ const PASSWORD_STATE_TTL_SECONDS = 300;
 const MAX_PASSWORD_FAILS = 5;
 const PASSWORD_LOCK_SECONDS = 900;
 
+/** Used only to compare the two /changepass entries without keeping the new password in the cache. */
 function hashPassword_(password, salt) {
   const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + ':' + password,
     Utilities.Charset.UTF_8);
   return Utilities.base64Encode(bytes);
 }
 
-/** True if `password` matches a stored "salt:hash" (null = default 0000). */
-function passwordMatches_(password, stored) {
-  if (stored === null) return password === DEFAULT_PASSWORD;
-  const parts = stored.split(':');
-  return hashPassword_(password, parts[0]) === parts.slice(1).join(':');
+function isDigitsOnly_(text) {
+  return /^\d+$/.test(String(text));
 }
 
-function isDefaultPassword_() {
-  return getProp_(PROP.PASSWORD_HASH) === null;
+/**
+ * The current password, read fresh from Settings (this also refreshes the
+ * cached settings, so /saldo uses the latest delay and Hide amounts).
+ * Returns { value } or { error } if the cell isn't numbers only.
+ */
+function readSheetPassword_() {
+  const tab = loadSettingsTab_(true);
+  const raw = tab ? tab.settings[SETTING.PASSWORD.toLowerCase()] : undefined;
+  const value = raw === undefined || raw === '' ? DEFAULT_PASSWORD : String(raw).trim();
+  if (!isDigitsOnly_(value)) {
+    return { error: '⚠️ The Password in the Settings tab must be numbers only. Please fix it in the sheet.' };
+  }
+  return { value: value };
+}
+
+/** Writes a new password into Settings (adds the row if it's missing). */
+function writeSheetPassword_(password) {
+  const ss = openMainSheet_();
+  if (!setSettingValue_(ss, SETTING.PASSWORD, password)) {
+    const sheet = ss.getSheetByName(TAB.SETTINGS);
+    const row = SETTING_ROWS.filter(function (r) { return r[0] === SETTING.PASSWORD; })[0];
+    writeRowsByHeaders_(sheet, lastDataRow_(sheet, 'Setting') + 1,
+      [{ 'Setting': SETTING.PASSWORD, 'Value': password, 'Notes': row[2] }]);
+  }
 }
 
 function newSalt_() {
@@ -71,11 +93,12 @@ function askPassword_(chatId, purpose, extra, promptText) {
     sendMessage(chatId, '🔒 Too many wrong passwords. Try again in 15 minutes.');
     return;
   }
-  const prompt = sendMessage(chatId, promptText + '\n<i>(Your message will be deleted right away.)</i>');
+  const prompt = sendMessage(chatId, promptText +
+    '\n<i>(Numbers only. Your message will be deleted right away. /cancel to stop.)</i>');
   setPasswordState_(chatId, Object.assign({ purpose: purpose, promptId: prompt.message_id }, extra || {}));
 }
 
-/** /saldo [group or owner] */
+/** /saldo [wallet, group, owner or "all"] */
 function startSaldo_(chatId, filter) {
   askPassword_(chatId, 'saldo', { filter: filter }, '🔒 Enter the password to see balances.');
 }
@@ -87,7 +110,9 @@ function startChangePassword_(chatId) {
 
 /**
  * Handles a message sent while a password prompt is open. The message and
- * the prompt are deleted first, whatever happens next.
+ * the prompt are deleted first, whatever happens next. Wrong or invalid
+ * input asks again (until the lockout), so a retry is never read as a
+ * transaction.
  */
 function handlePasswordInput_(message, state) {
   const chatId = String(message.chat.id);
@@ -95,28 +120,38 @@ function handlePasswordInput_(message, state) {
   deleteMessage(chatId, message.message_id);
   if (state.promptId) deleteMessage(chatId, state.promptId);
   clearPasswordState_(chatId);
+  const extra = { filter: state.filter, salt: state.salt, hash: state.hash };
 
   if (state.purpose === 'saldo' || state.purpose === 'cp_old') {
-    if (!passwordMatches_(text, getProp_(PROP.PASSWORD_HASH))) {
+    const current = readSheetPassword_();
+    if (current.error) {
+      sendMessage(chatId, current.error);
+      return;
+    }
+    if (text !== current.value) {
       const fails = recordPasswordFail_(chatId);
-      sendMessage(chatId, fails >= MAX_PASSWORD_FAILS
-        ? '❌ Wrong password. Locked for 15 minutes.'
-        : '❌ Wrong password. (' + (MAX_PASSWORD_FAILS - fails) + ' tries left)');
+      if (fails >= MAX_PASSWORD_FAILS) {
+        sendMessage(chatId, '❌ Wrong password. Locked for 15 minutes.');
+        return;
+      }
+      const why = isDigitsOnly_(text) ? 'Wrong password' : 'The password is numbers only';
+      askPassword_(chatId, state.purpose, extra,
+        '❌ ' + why + ' (' + (MAX_PASSWORD_FAILS - fails) + ' tries left). Try again:');
       return;
     }
     resetPasswordFails_(chatId);
     if (state.purpose === 'saldo') {
-      showSaldo_(chatId, state.filter);
+      showSaldo_(chatId, state.filter, current.value === DEFAULT_PASSWORD);
     } else {
-      askPassword_(chatId, 'cp_new', {}, '🔑 Send the <b>new</b> password (at least 4 characters).');
+      askPassword_(chatId, 'cp_new', {}, '🔑 Send the <b>new</b> password (numbers only, at least 4 digits).');
     }
     return;
   }
 
   if (state.purpose === 'cp_new') {
-    if (text.length < 4 || text === DEFAULT_PASSWORD || text.charAt(0) === '/') {
-      sendMessage(chatId, '❌ The new password must be at least 4 characters, not 0000, and not start with /. ' +
-        'Run /changepass again.');
+    if (!isDigitsOnly_(text) || text.length < 4 || text === DEFAULT_PASSWORD) {
+      askPassword_(chatId, 'cp_new', {},
+        '❌ The new password must be numbers only, at least 4 digits, and not 0000. Try again:');
       return;
     }
     const salt = newSalt_();
@@ -127,31 +162,32 @@ function handlePasswordInput_(message, state) {
 
   if (state.purpose === 'cp_confirm') {
     if (hashPassword_(text, state.salt) !== state.hash) {
-      sendMessage(chatId, "❌ The passwords didn't match. Run /changepass again.");
+      askPassword_(chatId, 'cp_new', {}, "❌ The passwords didn't match. Send the <b>new</b> password again:");
       return;
     }
-    PropertiesService.getScriptProperties().setProperty(PROP.PASSWORD_HASH, state.salt + ':' + state.hash);
-    sendMessage(chatId, '✅ Password changed. Use it for /saldo from now on (for both of you).');
+    writeSheetPassword_(text);
+    sendMessage(chatId, '✅ Password changed (it is also in Settings → Password). Use it for /saldo from now on, ' +
+      'for both of you.');
   }
 }
 
-/** Sends the /saldo reply (spoilers + auto-delete). */
-function showSaldo_(chatId, filter) {
+/** Sends the /saldo reply (spoilers + auto-delete). Settings were just read fresh. */
+function showSaldo_(chatId, filter, isDefaultPassword) {
   const ss = openMainSheet_();
-  const result = buildSaldoText_(loadWallets_(ss), filter);
+  const result = buildSaldoText_(loadWallets_(ss), filter, getSettingList_(SETTING.INVESTMENT_GROUPS));
   if (result.error) {
     sendMessage(chatId, result.error);
     return;
   }
   let text = result.text;
-  if (isDefaultPassword_()) {
+  if (isDefaultPassword) {
     text += '\n\n⚠️ You are still using the default password <b>0000</b>. Change it with /changepass.';
   }
   const delay = Math.min(getSettingInt_(SETTING.SALDO_DELETE_SECONDS), MAX_DELETE_DELAY_SECONDS);
   const triggerMissing = delay > 0 && !ScriptApp.getProjectTriggers().some(function (t) {
     return t.getHandlerFunction() === 'cleanupMessages';
   });
-  if (delay > 0 && !triggerMissing) text += '\n\n🕒 This message will be deleted in ' + formatDelay_(delay) + '.';
+  if (delay > 0 && !triggerMissing) text += '\n\n🕒 This message will be deleted in about ' + formatDelay_(delay) + '.';
   if (triggerMissing) text += '\n\n⚠️ Auto-delete is not set up yet (run installCleanupTrigger in the editor).';
 
   const sent = sendMessage(chatId, text);

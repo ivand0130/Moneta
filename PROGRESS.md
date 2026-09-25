@@ -31,6 +31,10 @@ Next: Phase 1 — Sheet template
   There is also an unused "Untitled project" in the account that can be deleted
 
 ## Notes / decisions made during build
+- doPost must return HtmlService output, NOT ContentService: ContentService
+  gives a 302 that Telegram treats as failure, so it retries the same update
+  forever and queues every newer message behind it. After fixing a stuck
+  queue, run setWebhook once (it drops pending updates)
 - Deployment lesson: if the bot is silent but testDoPost works, the webhook
   points at a different or outdated deployment. Fix: Manage deployments →
   Edit → New version → copy that /exec URL into WEB_APP_URL → setWebhook

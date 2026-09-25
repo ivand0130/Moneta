@@ -55,9 +55,13 @@ function doPost(e) {
   return ok_();
 }
 
-/** Plain 200 OK response for Telegram. */
+/**
+ * 200 OK response for Telegram. Uses HtmlService on purpose: ContentService
+ * answers with a 302 redirect, which Telegram treats as a failed delivery and
+ * keeps retrying, blocking every newer message behind it.
+ */
 function ok_() {
-  return ContentService.createTextOutput('OK');
+  return HtmlService.createHtmlOutput('OK');
 }
 
 /** True if the request URL carries the correct ?key= secret. */

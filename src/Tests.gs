@@ -39,6 +39,35 @@ function testAllowList() {
   }
 }
 
+/**
+ * Feeds a fake "/start" from the first allowed chat ID straight into doPost,
+ * bypassing Telegram and the deployment. You should get the /start reply.
+ */
+function testDoPost() {
+  const ids = getAllowedChatIds_();
+  if (ids.length === 0) {
+    console.log('FAIL: ALLOWED_CHAT_IDS is empty.');
+    return;
+  }
+  if (getProp_(PROP.WEBHOOK_KEY) === null) {
+    console.log('FAIL: WEBHOOK_KEY is not set. Run setWebhook first.');
+    return;
+  }
+  const update = {
+    update_id: 'test_' + Date.now(),
+    message: {
+      message_id: 1,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: Number(ids[0]), type: 'private' },
+      from: { id: Number(ids[0]), first_name: 'Test' },
+      text: '/start'
+    }
+  };
+  doPost({ parameter: { key: getProp_(PROP.WEBHOOK_KEY) }, postData: { contents: JSON.stringify(update) } });
+  showRecentUpdates();
+  console.log('If the last line says "handled", check Telegram for the reply.');
+}
+
 /** Sends a test message to every allowed chat ID (checks the bot token). */
 function testSendHello() {
   const ids = getAllowedChatIds_();

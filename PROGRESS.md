@@ -3,7 +3,7 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 0 — code pushed; waiting on manual setup + Telegram test
+Phase 0 — DONE (2026-09-25). Bot replies to /start in Telegram.
 Next: Phase 1 — Sheet template
 
 ## Done
@@ -19,7 +19,8 @@ Next: Phase 1 — Sheet template
   - /start and placeholder /help; other text gets a "still being built" reply
   - Editor helpers: setWebhook (creates WEBHOOK_KEY), getWebhookInfo (key
     hidden), deleteWebhook
-  - Tests.gs: testConfig, testDedupe, testAllowList, testSendHello
+  - Tests.gs: testConfig, testDedupe, testAllowList, testDoPost (fake /start
+    straight into doPost, bypassing Telegram), testSendHello
   - Stub .gs files for every later module
   - git repo initialised
 
@@ -30,6 +31,11 @@ Next: Phase 1 — Sheet template
   There is also an unused "Untitled project" in the account that can be deleted
 
 ## Notes / decisions made during build
+- Deployment lesson: if the bot is silent but testDoPost works, the webhook
+  points at a different or outdated deployment. Fix: Manage deployments →
+  Edit → New version → copy that /exec URL into WEB_APP_URL → setWebhook
+- Always update the EXISTING deployment (Edit → New version), never
+  "New deployment", so the webhook URL stays the same
 - Script Properties: BOT_TOKEN, GEMINI_KEY, WEB_APP_URL, WEBHOOK_KEY (auto),
   ALLOWED_CHAT_IDS (Phase 0 only). Reserved: MAIN_SHEET_ID,
   ARCHIVE_FOLDER_ID, TEMPLATE_ID, PASSWORD_HASH

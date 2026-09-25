@@ -16,6 +16,8 @@
 - Balances, remaining amounts and gain/loss use sheet formulas where possible
   so manual edits stay correct; IDs and statuses are set by the script
 - Password message is auto-deleted after reading
+- Sensitive amounts are hidden with Telegram spoiler formatting, and the
+  /saldo reply auto-deletes after a delay set in Settings (see Section 13)
 - Monthly report includes a breakdown by user
 - Investment prices are manual only for now
 
@@ -393,6 +395,26 @@ Convert / close hutang/piutang:
 - Delete the message containing the password after it's read
   (deleteMessage works in private chats)
 
+### Hiding sensitive amounts
+- Spoiler formatting: in replies to /saldo, /inv, /open and /report, every
+  Rp amount, quantity value and gain/loss is wrapped in Telegram spoiler
+  formatting (HTML parse mode, <tg-spoiler>), so it stays blurred until
+  tapped. Everyday confirmations (e.g. "✅ Saved as TRX-0123") and previews
+  keep plain amounts so logging stays fast
+- Spoilers can be turned on/off in Settings ("Hide amounts" = yes/no)
+- Auto-delete: the /saldo reply is deleted automatically after the delay
+  set in Settings ("Saldo auto-delete (seconds)", default 60; 0 = never)
+  - The bot stores the chat ID, message ID and delete time in a queue
+    (CacheService, with a Script Properties backup)
+  - A cleanup trigger runs every minute, deletes expired messages, and exits
+    immediately when the queue is empty to save quota
+  - Deletion may be up to about a minute late; that is acceptable
+  - If deletion fails (e.g. message already deleted), log it and move on
+  - The bot adds a small note under the /saldo reply, e.g.
+    "🕒 This message will be deleted in 60s"
+- Telegram only lets bots delete messages sent in the last 48 hours; the
+  delay setting is capped below that
+
 ## 14. Confirmation & Error Handling
 The bot must ask me questions instead of guessing when:
 - The input format is unclear or the amount can't be read
@@ -568,7 +590,8 @@ including closing status and archive link
 Tab 7: Settings: a Users table (chat ID, display name, GoPay name) for me
 and my partner, main sheet ID, archive folder ID, reminder
 times, thresholds (large amount, duplicate window, reminder days), timezone,
-AI on/off (URLs and password hash stored in script properties)
+AI on/off, Hide amounts (yes/no), Saldo auto-delete (seconds)
+(URLs and password hash stored in script properties)
 
 Tab 8: (no Pending tab) Pending confirmations are stored in CacheService
 with a 10-minute expiry, keyed by chat ID
@@ -761,7 +784,9 @@ Bot (last day, 18:00): 📅 Ready to close September 2026? [Start closing]
    differences, balance adjustments, investment purchases (lot, gram, total),
    bulk price updates, partial sales, GoPay Split Bill images (clear, blurry,
    unknown names, totals not matching), closing and archiving, /setsheet with
-   valid and invalid sheets, /template, passwords, and every error case
+   valid and invalid sheets, /template, passwords, spoiler amounts in
+   /saldo, /inv, /open and /report, /saldo auto-delete (default, custom
+   delay, 0 = never, already deleted manually), and every error case
 7. Suggest improvements or risks I haven't thought of
 
 ## 23. Success Criteria

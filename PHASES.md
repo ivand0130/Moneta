@@ -63,6 +63,11 @@ Phase 2 goal: log Income, Expense and simple Transfer end to end.
 - Checks: large amount, duplicate within 5 min, negative balance
 - /undo, /saldo (with password, auto-delete password message, /changepass,
   default 0000 reminder), /wallet, /category, /help with real examples
+- Hiding amounts (SPEC Section 13 "Hiding sensitive amounts"): a shared
+  spoiler helper for formatting Rp amounts, used by /saldo now and by
+  /inv, /open and /report later; /saldo reply auto-delete via a queue and
+  a 1-minute cleanup trigger that exits early when empty. Guide me through
+  creating the trigger
 Show me your plan and questions first.
 ```
 
@@ -81,8 +86,8 @@ Show me your plan and questions first.
 Read CLAUDE.md, SPEC.md (Section 7, Section 14) and PROGRESS.md.
 Phase 4 goal: piutang, hutang, long-term, group piutang with sub-records,
 split bill (equal/custom), pelunasan (full/partial/overpayment), add to
-existing, convert/close, contacts and aliases (/contact), /open, full
-history linked by Debt ID.
+existing, convert/close, contacts and aliases (/contact), /open (amounts
+with the spoiler helper from Phase 2), full history linked by Debt ID.
 Show me your plan and questions first.
 ```
 
@@ -104,7 +109,7 @@ Phase 6 goal: investment purchases (lot, gram, unit, total; any two of
 quantity/price/total), investment category wallets, single and bulk
 /inv update (including edits made directly in the sheet), Price_History,
 selling with FIFO default and row picker, realized vs unrealized gain,
-/inv, and the last-day 12:00 price reminder in the dispatcher.
+/inv (amounts with the spoiler helper from Phase 2), and the last-day 12:00 price reminder in the dispatcher.
 Show me your plan and questions first.
 ```
 
@@ -125,7 +130,8 @@ Show me your plan and questions first.
 Read CLAUDE.md, SPEC.md (Sections 11, 12, 16) and PROGRESS.md.
 Phase 8 goal: /closing with pre-checks and summary, archive sheet created
 in the Archive folder, clearing and carry-over, blocking entries in closed
-months (no /reopen), Monthly Report tab, /report [month] [year], automatic
+months (no /reopen), Monthly Report tab, /report [month] [year] (chat
+summary amounts with the spoiler helper from Phase 2), automatic
 report after closing, the 18:00 last-day closing reminder, /setsheet with
 validation, /setarchive, /settemplate, /template. Be careful: closing
 deletes data from the main sheet, so archive and verify first.

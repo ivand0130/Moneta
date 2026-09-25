@@ -67,6 +67,10 @@ Bot replies in English; user input may be English or Bahasa Indonesia.
   and log the failure to the Logs tab.
 - Only chat IDs listed in the Users table in Settings may use the bot.
   Anyone else gets no data.
+- Amounts in /saldo, /inv, /open and /report replies go through ONE spoiler
+  helper (respecting the "Hide amounts" setting). Previews and save
+  confirmations stay plain. Send messages with parse_mode HTML and escape
+  user text (<, >, &) so notes can't break formatting.
 - All amounts are stored as positive integers in Rupiah; display as Rp with
   "." thousand separators (Rp1.250.000).
 
@@ -89,3 +93,6 @@ Bot replies in English; user input may be English or Bahasa Indonesia.
   update the EXISTING deployment to a new version so the webhook URL stays
   the same.
 - Batch sheet reads/writes (getValues/setValues), never cell-by-cell loops.
+- Two time triggers only: the hourly reminder dispatcher and the 1-minute
+  message-cleanup trigger. The cleanup trigger must exit immediately when
+  its queue is empty, to stay within the daily trigger runtime quota.

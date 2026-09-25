@@ -14,30 +14,36 @@ function doPost(e) {
   let chatId = null;
   try {
     if (!isValidWebhookKey_(e)) {
-      console.warn('Rejected request: missing or wrong webhook key.');
+      recordEvent_('rejected: missing or wrong webhook key');
       return ok_();
     }
 
     const update = JSON.parse(e.postData.contents);
     if (isDuplicateUpdate_(update.update_id)) {
-      console.log('Skipped duplicate update_id ' + update.update_id);
+      recordEvent_('skipped duplicate update_id ' + update.update_id);
       return ok_();
     }
 
     chatId = getChatId_(update);
-    if (chatId === null) return ok_();
+    if (chatId === null) {
+      recordEvent_('ignored: update has no chat');
+      return ok_();
+    }
+
+    const from = getFrom_(update) || {};
+    const who = [from.first_name, from.last_name].filter(Boolean).join(' ') +
+      (from.username ? ' @' + from.username : '');
 
     if (!isAllowedChat_(chatId)) {
-      const from = getFrom_(update) || {};
-      console.warn('Blocked chat ID: ' + chatId +
-        ' (name: ' + [from.first_name, from.last_name].filter(Boolean).join(' ') +
-        (from.username ? ', @' + from.username : '') + ')');
+      recordEvent_('BLOCKED chat ID ' + chatId + ' (' + who + ')');
       return ok_();
     }
 
     routeUpdate_(update);
+    recordEvent_('handled chat ID ' + chatId + ' (' + who + ')');
   } catch (err) {
     logError_('doPost', err);
+    recordEvent_('ERROR: ' + (err && err.message ? err.message : String(err)));
     if (chatId !== null && isAllowedChat_(chatId)) {
       try {
         sendMessage(chatId, 'Sorry, something went wrong. Please try again.');
@@ -155,6 +161,38 @@ function buildHelpText_() {
     '/start - check the bot is running\n' +
     '/help - show this message\n\n' +
     'Logging income, expenses and transfers is coming soon.';
+}
+
+/**
+ * Remembers the last few webhook outcomes in a Script Property, because
+ * Apps Script often hides console logs of web-app runs made by Telegram.
+ * View them by running showRecentUpdates() from the editor. Never throws.
+ */
+function recordEvent_(text) {
+  const line = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss') + '  ' + text;
+  console.log(line);
+  try {
+    withScriptLock_(function () {
+      const props = PropertiesService.getScriptProperties();
+      let events = [];
+      try { events = JSON.parse(props.getProperty(PROP.RECENT_UPDATES) || '[]'); } catch (e) {}
+      events.push(line.substring(0, 300));
+      props.setProperty(PROP.RECENT_UPDATES, JSON.stringify(events.slice(-RECENT_UPDATES_MAX)));
+    });
+  } catch (err) {
+    console.error('[recordEvent_] ' + err.message);
+  }
+}
+
+/** Run from the editor: shows what happened to the last few messages. */
+function showRecentUpdates() {
+  const raw = PropertiesService.getScriptProperties().getProperty(PROP.RECENT_UPDATES);
+  const events = raw ? JSON.parse(raw) : [];
+  if (events.length === 0) {
+    console.log('No messages received yet. Check the webhook with getWebhookInfo.');
+    return;
+  }
+  console.log('Last ' + events.length + ' messages (oldest first):\n' + events.join('\n'));
 }
 
 /**

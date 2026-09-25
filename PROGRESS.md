@@ -13,7 +13,9 @@ Next: Phase 1 — Sheet template
     scopes: external_request, spreadsheets, drive, script.scriptapp
   - doPost: webhook ?key= check → update_id dedupe (CacheService 6h, inside
     LockService) → allow-list (ALLOWED_CHAT_IDS Script Property) → router
-  - Blocked chat IDs are ignored silently and written to the execution log
+  - Blocked chat IDs are ignored silently; last 10 webhook outcomes are kept
+    in the RECENT_UPDATES Script Property (run showRecentUpdates in Main.gs)
+    because Apps Script hides console logs of web-app runs made by Telegram
   - /start and placeholder /help; other text gets a "still being built" reply
   - Editor helpers: setWebhook (creates WEBHOOK_KEY), getWebhookInfo (key
     hidden), deleteWebhook

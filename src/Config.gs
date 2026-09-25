@@ -17,8 +17,12 @@ const PROP = {
   MAIN_SHEET_ID: 'MAIN_SHEET_ID',       // Main Google Sheet ID (Phase 1)
   ARCHIVE_FOLDER_ID: 'ARCHIVE_FOLDER_ID',
   TEMPLATE_ID: 'TEMPLATE_ID',
-  PASSWORD_HASH: 'PASSWORD_HASH'
+  PASSWORD_HASH: 'PASSWORD_HASH',
+  RECENT_UPDATES: 'RECENT_UPDATES'      // Written by the bot; see showRecentUpdates()
 };
+
+/** How many recent webhook outcomes to keep for showRecentUpdates(). */
+const RECENT_UPDATES_MAX = 10;
 
 /** How long a processed update_id is remembered (seconds, max 6 hours). */
 const DEDUPE_TTL_SECONDS = 21600;

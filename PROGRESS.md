@@ -3,8 +3,10 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 2 — code pushed (2026-09-25), waiting on manual setup + Telegram test.
-Phase 1 — DONE (2026-09-25).
+Phase 2 — DONE (2026-09-28). All editor tests and the Telegram checklist
+passed (incl. the budget message after saving).
+Next: Phase 2B — Budgeting (only /budget, "Password for /budget" and
+Budget_History remain; see PHASES.md), then Phase 3.
 
 ## Deferred (agreed, must be picked up later — do not drop)
 - AI natural-language PARSING fallback: when the rule-based parser can't read
@@ -23,7 +25,7 @@ after a fixed 60s (the cleanup's precise ≤60s wait stays, it only serves
 on-demand replies); "Password for /saldo" and "Password for /budget"
 switches in Settings (one switch for both users); budget history goes to a
 new Budget_History tab at closing.
-Already done (2026-09-28, in Phase 2 code):
+Already done (2026-09-28, part of Phase 2):
 - Categories Spent/Remaining formula columns in getSchema_ (Remaining red
   when negative) + upgradeSheets() to add them to the existing main sheet
   and template (writes formulas in en_US, then restores the locale; also
@@ -108,6 +110,54 @@ Still to change in code that is already built:
   - Logs tab is live (errors from logError_ land there)
   - Tests.gs: testConfig, testDedupe, testAllowList, testSheet, testDoPost,
     testSendHello
+- Phase 2 (core logging: income, expense, transfer)
+  - Parser.gs (pure, tested): amounts 50000 / 50.000 / 50,000 / Rp50.000 /
+    50k / 50rb / 50 rb / 50ribu / 1.5jt / 1,5jt / 2jt / 2 juta; unclear
+    amounts (2.00.000, 1,5,000, 50.5rb, 1.5, 1.250jt, bare "50") return
+    options to pick; dates kemarin/kmrn/kmarin/kemaren/yesterday, hari ini,
+    N hari lalu / N days ago, dd/mm(/yyyy), dd-mm, "20 sep", "tgl 10" =
+    nearest past 10th (confirmed by the user); #category (exact or unique
+    prefix); income by +, income words or an Income keyword; transfers by
+    transfer/tf/pindah/top up or "X ke Y"; transfers with fee words or a
+    second amount are refused until Phase 3
+  - Wallet matching: full name, or the part before brackets ("IPOT" →
+    "IPOT (Saham)"); a short name shared by several wallets asks the user to
+    pick. Investment wallets (Wallet Type = Investment, or group listed in
+    "Investment Wallet Groups") are blocked for expense/income; transfers may
+    use investment-group cash wallets (BCA → IPOT) but not Type=Investment
+  - Category mapping: #tag → longest keyword → Gemini (AI.gs, JSON only,
+    model from Settings, failures logged) → buttons; after the user picks a
+    category, offer to save a word from the note as a keyword (moved from
+    any other category)
+  - Wallet rules: mentioned → category default wallet (shown in preview) →
+    buttons. Expense buttons = "Spending Wallet Groups"; income = all
+    non-investment cash wallets; transfers = all cash wallets
+  - Confirm.gs: one pending item per chat in CacheService (10 min), buttons
+    carry a pid so old buttons expire; preview [Yes] [No] [Edit]; Edit →
+    Amount/Category/Wallet/Date/Note/Type with Back and Cancel entry; checks
+    in the preview: large amount, duplicate (type+amount+note within the
+    window), negative balance, future date; closed month blocked with
+    [Use today]; double taps guarded (claimPending_)
+  - "✅ Saved as TRX-0001." (no balances); afterSave_ then sends the budget
+    message (see "Spec change" above)
+  - /undo (own last entry or its Link ID group, not in closed months),
+    /saldo [wallet | short name | group | owner | all] (investments hidden
+    unless "all"; spoilers; deleted after a fixed 60s), /changepass, /wallet,
+    /wallet add (guided), /category or /cat, /category add, /cancel, /help
+  - Password: Settings "Password" row, numbers only, read fresh; wrong
+    password re-asks (5 tries, then 15-min lock); every password message and
+    prompt is deleted; "Password for /saldo" switch
+  - Telegram.gs: HTML messages, escapeHtml_, formatRp_, THE spoiler helper
+    spoiler_/money_, delete queue (cache + Script Property backup) with
+    cleanupMessages (every-minute trigger, exits when empty, waits for
+    messages due within the next minute) and installCleanupTrigger
+  - Settings rows added: Gemini Model, Hide amounts, Password, Password for
+    /saldo, Spending Wallet Groups, Investment Wallet Groups, Budget
+    auto-delete. upgradeSheets() / upgradeSettings() add missing rows and
+    columns to existing sheets and remove obsolete rows
+  - Tests: testParser (87 cases), testCategoryMapping, testSpoiler,
+    testPassword, testDeleteQueue, testBudget, testSheet; showSettings and
+    showRecentUpdates helpers
 
 ## Known issues
 - Conversion (debt → income/expense) rows: how they count in totals and
@@ -117,6 +167,15 @@ Still to change in code that is already built:
   display rounded (the stored value is exact)
 - Closed-month protection is not built yet (Closing phase)
 - Partner's chat ID may still need to be typed into Settings → Users
+- The Users table and Settings are cached for 5 minutes (except the
+  password, the /saldo switch and the budget-message settings, which are
+  read fresh). Run clearConfigCache after editing Users to apply at once
+- Gemini has no timeout control in UrlFetchApp; a slow reply delays the
+  preview (the bot shows "typing…")
+- End-of-day deletion of budget messages relies on the cleanup trigger; if
+  it isn't installed, /saldo warns but budget messages just stay
+- The "Monthly Budget" column is only used for Expense categories; budgets
+  typed on other types are ignored (by design)
 
 ## Notes / decisions made during build
 - Formulas written by script must be written while the sheet locale is
@@ -132,8 +191,17 @@ Still to change in code that is already built:
   "New deployment", so the webhook URL stays the same
 - Script Properties: BOT_TOKEN, GEMINI_KEY, WEB_APP_URL, WEBHOOK_KEY (auto),
   MAIN_SHEET_ID, TEMPLATE_ID (set by createTemplate), ALLOWED_CHAT_IDS
-  (fallback only), RECENT_UPDATES (bot-written). Reserved: ARCHIVE_FOLDER_ID,
-  PASSWORD_HASH
+  (fallback only), RECENT_UPDATES and DELETE_QUEUE (bot-written). Reserved:
+  ARCHIVE_FOLDER_ID, RECEIPTS_FOLDER_ID. PASSWORD_HASH is no longer used
+  (the password lives in Settings) and can be deleted
+- Every code change needs Deploy → Manage deployments → Edit → New version;
+  "it doesn't work" after a push was twice just a missing new version
+- Testing approach: pure logic runs in Node before pushing, plus a fake
+  end-to-end run (fake SpreadsheetApp/Cache/Telegram) of whole
+  conversations; the real sheet is then checked with the editor tests
+- Owner decisions in Phase 2: no balances on "✅ Saved"; /saldo delete fixed
+  at 60s (no setting); password in the Settings tab; expense buttons limited
+  to Spending Wallet Groups
 - Webhook secret is passed as ?key= in the URL because Apps Script can't read
   Telegram's secret-token header
 - Display names default to "Me" / "Partner" (user's choice); editable in Users

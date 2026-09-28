@@ -3,10 +3,10 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 3 — DONE (2026-09-28). Telegram checklist passed. (The last change —
-removing AI category guessing — was pushed at closing; deploy a new version.)
-Phase 2B — DONE (2026-09-28). Phase 2 — DONE (2026-09-28).
-Next: Phase 4 — Hutang / piutang and split bill (text).
+Phase 4 — code pushed (2026-09-28), waiting on upgradeSheets + deploy +
+Telegram test.
+Phase 3 — DONE (2026-09-28). Phase 2B — DONE. Phase 2 — DONE.
+Next after 4: Phase 5 — Favorites and reminders.
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)

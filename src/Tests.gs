@@ -590,3 +590,85 @@ function testGemini() {
     (ai && ai.ok ? ai.type + ' ' + ai.amount + ' ' + (ai.wallet || '(no wallet)') + ' ' + (ai.category || '(no category)')
       : JSON.stringify(ai)));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4 tests
+// ---------------------------------------------------------------------------
+
+/** testCtx_ plus contacts (Budi has the alias "Budi Santoso"). */
+function debtCtx_() {
+  const ctx = testCtx_();
+  ctx.contacts = [{ name: 'Budi', aliases: ['Budi Santoso'] }, { name: 'Andi', aliases: ['andi w'] },
+    { name: 'Citra', aliases: [] }];
+  return ctx;
+}
+
+function testDebtParser() {
+  const ctx = debtCtx_();
+  const people = function (r) { return r.people ? r.people.map(function (p) { return p.name + ' ' + p.amount; }).join(', ') : null; };
+  const cases = [
+    ['piutang 500rb Budi', { ok: true, kind: 'new', debtType: 'Piutang', name: 'Budi', known: true, amount: 500000, term: 'Short' }],
+    ['piutang 500rb Budi jatuh tempo 30/10', { kind: 'new', due: '2026-10-30' }],
+    ['pinjam 1jt dari Andi', { kind: 'new', debtType: 'Hutang', name: 'Andi', amount: 1000000 }],
+    ['Budi pinjam 500rb', { kind: 'new', debtType: 'Piutang', name: 'Budi' }],
+    ['hutang 1jt Doni', { kind: 'new', debtType: 'Hutang', name: 'Doni', known: false }],
+    ['piutang 500rb doni', { name: 'doni', known: false }],
+    ['piutang 500rb Budi Santoso', { name: 'Budi', known: true }],
+    ['piutang jangka panjang 10jt Budi', { kind: 'new', term: 'Long', amount: 10000000 }],
+    ['piutang 500rb Budi buat bayar kos', { kind: 'new', name: 'Budi', note: 'bayar kos' }],
+    ['piutang 500rb Budi BCA', { wallet: 'BCA' }],
+    ['pinjam 1jt dari Andi tempo 5 hari', { due: '2026-9-30' }],
+    ['piutang 500rb Budi kemarin', { date: '2026-9-24' }],
+    ['piutang grup 600rb Budi, Andi, Citra', { kind: 'new', group: true }],
+    ['piutang grup Budi 200rb, Andi 250rb, Citra 150rb', { group: true, total: 600000 }],
+    ['split 400rb makan Budi Andi termasuk saya', { kind: 'split', me: 133334, note: 'makan', category: 'Food' }],
+    ['split makan Budi 150rb Andi 120rb saya 130rb', { kind: 'split', total: 400000, me: 130000 }],
+    ['split 300rb Budi Andi tanpa saya', { kind: 'split', includeMe: false, me: 0 }],
+    ['Budi bayar piutang 200rb', { ok: true, kind: 'pay', debtType: 'Piutang', name: 'Budi', amount: 200000 }],
+    ['bayar hutang Andi 500rb', { kind: 'pay', debtType: 'Hutang', name: 'Andi', amount: 500000 }],
+    ['Budi bayar 200rb', { kind: 'pay', debtType: 'Piutang', name: 'Budi' }],
+    ['bayar Andi 500rb', { kind: 'pay', debtType: 'Hutang', name: 'Andi' }],
+    ['Budi lunas', { kind: 'pay', full: true, amount: null, name: 'Budi' }],
+    ['Budi bayar piutang 200rb kemarin ke BCA', { kind: 'pay', date: '2026-9-24', wallet: 'BCA' }],
+    ['tambah piutang Budi 100rb', { kind: 'add', debtType: 'Piutang', name: 'Budi', amount: 100000 }],
+    ['tutup piutang PTG-011 jadi pengeluaran', { kind: 'convert', debtType: 'Piutang', id: 'PTG-011' }],
+    ['tutup hutang Andi', { kind: 'convert', debtType: 'Hutang', name: 'Andi' }],
+    ['bayar PTG-010-A 100rb', { kind: 'pay', id: 'PTG-010-A', debtType: 'Piutang' }],
+    ['piutang Budi', { ok: false, error: 'debt_no_amount' }],
+    ['split 400rb makan', { ok: false, error: 'split_no_people' }],
+    ['piutang grup 600rb Budi', { ok: false, error: 'group_few_people' }],
+    ['split 500rb Budi 150rb Andi 120rb saya 130rb', { ok: false, error: 'shares_mismatch' }],
+    ['tambah piutang 100rb', { ok: false, error: 'debt_no_name' }]
+  ];
+  let pass = 0;
+  cases.forEach(function (c) { if (checkCase_('debt: ' + c[0], parseDebt_(c[0], ctx), c[1])) pass++; });
+  // Group / split shares
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  t('group equal shares', people(parseDebt_('piutang grup 600rb Budi, Andi, Citra', ctx)), 'Budi 200000, Andi 200000, Citra 200000');
+  t('group custom shares', people(parseDebt_('piutang grup Budi 200rb, Andi 250rb, Citra 150rb', ctx)),
+    'Budi 200000, Andi 250000, Citra 150000');
+  t('split equal: friends round down, I take the leftover', people(parseDebt_('split 400rb makan Budi Andi termasuk saya', ctx)),
+    'Budi 133333, Andi 133333');
+  // Not debts → the normal transaction parser handles them
+  t('"bayar listrik 200rb" is not a debt', parseDebt_('bayar listrik 200rb', ctx), null);
+  t('"50rb makan" is not a debt', parseDebt_('50rb makan', ctx), null);
+  const total = cases.length + 5;
+  console.log((pass === total ? 'PASS' : 'FAIL') + ': testDebtParser ' + pass + '/' + total);
+}
+
+/** Share maths (no sheet needed). */
+function testShares() {
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  const s = function (people, total, me) { return JSON.stringify(computeShares_(people, total, me)); };
+  t('equal incl. me', s([{ name: 'A', amount: null }, { name: 'B', amount: null }], 400000, { amount: null }),
+    JSON.stringify({ people: [{ name: 'A', amount: 133333 }, { name: 'B', amount: 133333 }], me: 133334, total: 400000 }));
+  t('equal without me: leftover to the first person', s([{ name: 'A', amount: null }, { name: 'B', amount: null }], 100001, null),
+    JSON.stringify({ people: [{ name: 'A', amount: 50001 }, { name: 'B', amount: 50000 }], me: 0, total: 100001 }));
+  t('all custom, no total', s([{ name: 'A', amount: 150000 }], 0, { amount: 130000 }),
+    JSON.stringify({ people: [{ name: 'A', amount: 150000 }], me: 130000, total: 280000 }));
+  t('some custom, rest split', s([{ name: 'A', amount: 100000 }, { name: 'B', amount: null }], 300000, { amount: null }),
+    JSON.stringify({ people: [{ name: 'A', amount: 100000 }, { name: 'B', amount: 100000 }], me: 100000, total: 300000 }));
+  t('mismatch', JSON.parse(s([{ name: 'A', amount: 100000 }], 300000, { amount: 100000 })).error, 'shares_mismatch');
+  console.log((pass === 5 ? 'PASS' : 'FAIL') + ': testShares ' + pass + '/5');
+}

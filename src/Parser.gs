@@ -620,3 +620,321 @@ function parseAdjust_(text, ctx) {
     note: note
   };
 }
+
+// ---------------------------------------------------------------------------
+// Hutang / piutang / split bill (Phase 4, SPEC Section 7)
+// ---------------------------------------------------------------------------
+// parseDebt_ returns null when the message isn't about a debt (the normal
+// transaction parser handles it), otherwise { ok: true, kind, … } or
+// { ok: false, error }. kind: 'new' (piutang/hutang, single or group),
+// 'split', 'pay', 'add', 'convert'. Pure: contacts, wallets, categories in ctx.
+
+const LEND_WORDS = ['piutang', 'pinjamin', 'pinjemin', 'minjemin', 'pinjamkan', 'meminjamkan', 'lend', 'lent', 'loan'];
+const BORROW_WORDS = ['hutang', 'utang', 'pinjam', 'minjam', 'minjem', 'ngutang', 'borrow', 'borrowed'];
+const DEBT_TYPE_WORDS = ['piutang', 'hutang', 'utang'];
+const GROUP_WORDS = ['grup', 'group', 'bareng'];
+const SPLIT_WORDS = ['split', 'patungan', 'splitbill'];
+const PAY_WORDS = ['bayar', 'bayarin', 'membayar', 'dibayar', 'balikin', 'kembalikan', 'ngembaliin', 'paid', 'pay', 'pays',
+  'repaid', 'repay', 'cicil', 'nyicil'];
+const FULL_WORDS = ['lunas', 'lunasin', 'melunasi', 'pelunasan', 'settled'];
+const ADD_WORDS = ['tambah', 'nambah', 'tambahin', 'add'];
+const CONVERT_WORDS = ['tutup', 'close', 'convert', 'ikhlasin', 'ikhlaskan'];
+const ME_WORDS = ['saya', 'aku', 'gue', 'gw', 'me', 'myself'];
+const NOT_ME_WORDS = ['tanpa', 'without', 'excluding', 'kecuali'];
+const DUE_WORDS = ['tempo', 'due', 'deadline'];
+const NOTE_START_WORDS = ['untuk', 'utk', 'buat', 'for', 'keperluan'];
+// Small words that are never a name.
+const DEBT_FILLER_WORDS = ['jatuh', 'jadi', 'pengeluaran', 'pemasukan', 'expense', 'income', 'termasuk', 'incl',
+  'including', 'dan', 'and', '&', 'dari', 'ke', 'sama', 'dengan', 'dgn', 'to', 'from', 'with', 'by', 'jangka', 'panjang',
+  'long', 'term', 'longterm', 'yang', 'si', 'semua', 'all', 'uang', 'duit', 'sebesar', 'orang', 'bill'];
+const DEBT_ID_RE = /^(ptg|htg)-\d+(-[a-z]+)?$/i;
+
+function tokenize_(text) {
+  return String(text || '').trim().split(/\s+/).filter(String).map(function (raw) {
+    return { raw: raw, clean: cleanToken_(raw), used: false };
+  });
+}
+
+/**
+ * A due date after "jatuh tempo" / "due" / "deadline": dd/mm(/yyyy), "30 okt",
+ * "tgl 10", "N hari" / "N days", "minggu depan" / "next week", "bulan depan" /
+ * "next month". Always today or later (no year → the next such date).
+ */
+function extractDueDate_(tokens, now) {
+  const at = tokens.findIndex(function (t) { return !t.used && DUE_WORDS.indexOf(t.clean) !== -1; });
+  if (at === -1) return {};
+  tokens[at].used = true;
+  if (at > 0 && tokens[at - 1].clean === 'jatuh') tokens[at - 1].used = true;
+  const t = function (k) { return tokens[at + k] ? tokens[at + k].clean : ''; };
+  const use = function (n) { for (let k = 1; k <= n; k++) tokens[at + k].used = true; };
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const future = function (y, m, d, yearGiven) {
+    let date = makeDate_(y, m, d, now);
+    if (date && !yearGiven && date < today) date = makeDate_(y + 1, m, d, now);
+    return date;
+  };
+  let date = null;
+  let k = 1;
+  if (t(1) === 'tgl' || t(1) === 'tanggal') k = 2;
+  const dm = t(k).match(/^(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2}|\d{4}))?$/);
+  if (dm) {
+    const y = dm[3] ? (dm[3].length === 2 ? 2000 + Number(dm[3]) : Number(dm[3])) : now.getFullYear();
+    date = future(y, Number(dm[2]) - 1, Number(dm[1]), !!dm[3]);
+    use(k);
+  } else if (/^\d{1,2}$/.test(t(k)) && MONTH_WORDS[t(k + 1)] !== undefined) {
+    const yearGiven = /^(19|20)\d{2}$/.test(t(k + 2));
+    date = future(yearGiven ? Number(t(k + 2)) : now.getFullYear(), MONTH_WORDS[t(k + 1)], Number(t(k)), yearGiven);
+    use(k + (yearGiven ? 2 : 1));
+  } else if (k === 2 && /^\d{1,2}$/.test(t(2))) {
+    // "tempo tgl 10": the next 10th (this month if still ahead, else next month)
+    date = makeDate_(now.getFullYear(), now.getMonth(), Number(t(2)), now);
+    if (!date || date < today) {
+      const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      date = makeDate_(next.getFullYear(), next.getMonth(), Number(t(2)), now);
+    }
+    use(2);
+  } else if (/^\d{1,3}$/.test(t(1)) && ['hari', 'days', 'day'].indexOf(t(2)) !== -1) {
+    date = dayWithTime_(now.getFullYear(), now.getMonth(), now.getDate() + Number(t(1)), now);
+    use(t(3) === 'lagi' ? 3 : 2);
+  } else if ((t(1) === 'minggu' && t(2) === 'depan') || (t(1) === 'next' && t(2) === 'week')) {
+    date = dayWithTime_(now.getFullYear(), now.getMonth(), now.getDate() + 7, now);
+    use(2);
+  } else if ((t(1) === 'bulan' && t(2) === 'depan') || (t(1) === 'next' && t(2) === 'month')) {
+    date = dayWithTime_(now.getFullYear(), now.getMonth() + 1, now.getDate(), now);
+    use(2);
+  }
+  return date ? { date: date } : { error: 'due_unclear' };
+}
+
+/**
+ * Splits a bill / group amount. people = [{ name, amount|null }], me = null
+ * (not included) or { amount|null }. Equal parts are rounded down to whole
+ * Rupiah; the leftover goes to me (or to the first person if I'm not in it).
+ * Returns { people: [{name, amount}], me: amount|0, total } or { error }.
+ */
+function computeShares_(people, total, me) {
+  const slots = people.map(function (p) { return { name: p.name, amount: p.amount }; });
+  if (me) slots.push({ name: null, amount: me.amount, isMe: true });
+  const given = slots.filter(function (s) { return s.amount !== null && s.amount !== undefined; });
+  const open = slots.filter(function (s) { return s.amount === null || s.amount === undefined; });
+  const givenSum = given.reduce(function (a, s) { return a + s.amount; }, 0);
+  if (open.length === 0) {
+    if (total && total !== givenSum) return { error: 'shares_mismatch', sum: givenSum, total: total };
+    total = givenSum;
+  } else {
+    if (!total) return { error: 'debt_no_amount' };
+    const rest = total - givenSum;
+    if (rest <= 0) return { error: 'shares_mismatch', sum: givenSum, total: total };
+    const each = Math.floor(rest / open.length);
+    if (each <= 0) return { error: 'shares_mismatch', sum: givenSum, total: total };
+    open.forEach(function (s) { s.amount = each; });
+    const leftover = rest - each * open.length;
+    const taker = open.filter(function (s) { return s.isMe; })[0] || open[0];
+    taker.amount += leftover;
+  }
+  const mine = slots.filter(function (s) { return s.isMe; })[0];
+  return {
+    people: slots.filter(function (s) { return !s.isMe; }).map(function (s) { return { name: s.name, amount: s.amount }; }),
+    me: mine ? mine.amount : 0,
+    total: total
+  };
+}
+
+function parseDebt_(text, ctx) {
+  const now = ctx.now || new Date();
+  const tokens = tokenize_(text);
+  if (tokens.length === 0) return null;
+  const isIn = function (t, list) { return list.indexOf(t.clean) !== -1; };
+  // Command words only count before the note ("piutang 500rb Budi buat bayar kos" is not a payment).
+  const noteStart = tokens.findIndex(function (t) { return isIn(t, NOTE_START_WORDS); });
+  const head = noteStart === -1 ? tokens : tokens.slice(0, noteStart);
+  const has = function (list) { return head.some(function (t) { return isIn(t, list); }); };
+  const idTok = tokens.filter(function (t) { return DEBT_ID_RE.test(t.clean); })[0] || null;
+  const typeTok = tokens.filter(function (t) { return isIn(t, DEBT_TYPE_WORDS); })[0] || null;
+  const probe = tokens.map(function (t) { return { raw: t.raw, clean: t.clean, used: false }; });
+  const contactProbe = extractContacts_(probe, ctx.contacts || []);
+
+  let kind = null;
+  if (isIn(tokens[0], SPLIT_WORDS)) kind = 'split';
+  else if (isIn(tokens[0], CONVERT_WORDS) && (typeTok || idTok)) kind = 'convert';
+  else if (isIn(tokens[0], ADD_WORDS) && (typeTok || idTok)) kind = 'add';
+  else if ((has(PAY_WORDS) || has(FULL_WORDS)) && (typeTok || idTok || contactProbe.length)) kind = 'pay';
+  else if (has(LEND_WORDS) || has(BORROW_WORDS)) kind = 'new';
+  if (kind === null) return null;
+
+  // Piutang or hutang?
+  let debtType = null;
+  if (idTok) debtType = /^ptg/i.test(idTok.clean) ? 'Piutang' : 'Hutang';
+  else if (typeTok) debtType = typeTok.clean === 'piutang' ? 'Piutang' : 'Hutang';
+  const firstVerb = head.findIndex(function (t) { return isIn(t, PAY_WORDS) || isIn(t, FULL_WORDS); });
+  if (kind === 'new' && debtType === null) {
+    const lend = tokens.findIndex(function (t) { return isIn(t, LEND_WORDS); });
+    const borrow = tokens.findIndex(function (t) { return isIn(t, BORROW_WORDS); });
+    // "Budi pinjam 500rb" = Budi borrows from me → piutang; "pinjam 1jt dari Andi" → hutang.
+    debtType = lend !== -1 ? 'Piutang' : (borrow > 0 && !isIn(tokens[0], ME_WORDS) ? 'Piutang' : 'Hutang');
+  }
+  if (kind === 'pay' && debtType === null && contactProbe.length && firstVerb !== -1) {
+    // "Budi bayar 200rb" (they pay me) vs "bayar Andi 500rb" (I pay them)
+    debtType = contactProbe[0].index < firstVerb ? 'Piutang' : 'Hutang';
+  }
+  if (kind === 'split') debtType = 'Piutang';
+
+  const group = has(GROUP_WORDS);
+  const full = has(FULL_WORDS);
+  let term = 'Short';
+  tokens.forEach(function (t, i) {
+    const next = tokens[i + 1] ? tokens[i + 1].clean : '';
+    if ((t.clean === 'jangka' && next === 'panjang') || (t.clean === 'long' && next === 'term') || t.clean === 'longterm') {
+      term = 'Long';
+    }
+  });
+  const notMe = tokens.some(function (t, i) {
+    return isIn(t, NOT_ME_WORDS) && tokens[i + 1] && isIn(tokens[i + 1], ME_WORDS);
+  });
+
+  // Mark the command words; remember where the note starts.
+  const keywordLists = [LEND_WORDS, BORROW_WORDS, DEBT_TYPE_WORDS, GROUP_WORDS, SPLIT_WORDS, PAY_WORDS, FULL_WORDS,
+    ADD_WORDS, CONVERT_WORDS, NOT_ME_WORDS];
+  head.forEach(function (t) {
+    if (keywordLists.some(function (l) { return isIn(t, l); })) t.used = true;
+  });
+  if (idTok) idTok.used = true;
+
+  const due = extractDueDate_(tokens, now);
+  if (due.error) return { ok: false, error: 'due_unclear' };
+  const start = extractDate_(tokens, now);
+  if (start.error) return { ok: false, error: start.error, text: start.text };
+
+  let tag = null;
+  tokens.forEach(function (t) { if (!t.used && /^#\S+/.test(t.clean)) { tag = t.clean.slice(1); t.used = true; } });
+
+  const walletMentions = extractWallets_(tokens, ctx.wallets);
+  const walletNames = walletMentions.map(mentionLabel_).filter(function (n, i, a) { return a.indexOf(n) === i; });
+  if (walletNames.length > 1) return { ok: false, error: 'two_wallets', wallets: walletNames };
+  let wallet = null;
+  let walletChoices = null;
+  if (walletMentions.length) {
+    const kept = walletMentions[0].wallets.filter(function (w) { return !isInvestmentWallet_(w, ctx.investmentGroups); });
+    if (kept.length === 0) return { ok: false, error: 'investment_wallet', wallet: mentionLabel_(walletMentions[0]) };
+    if (kept.length === 1) wallet = kept[0].name; else walletChoices = kept.map(function (w) { return w.name; });
+  }
+
+  const contacts = extractContacts_(tokens, ctx.contacts || []);
+  const meTokens = [];
+  tokens.forEach(function (t, i) { if (!t.used && isIn(t, ME_WORDS)) { t.used = true; meTokens.push(i); } });
+  tokens.forEach(function (t) { if (!t.used && isIn(t, DEBT_FILLER_WORDS)) t.used = true; });
+  const amounts = extractAmounts_(tokens);
+  amounts.forEach(function (a) { a.tokens.forEach(function (k) { tokens[k].used = true; }); });
+
+  // Where the note starts ("untuk …", "buat …"): everything after it is the note.
+  let noteAt = tokens.findIndex(function (t) { return !t.used && isIn(t, NOTE_START_WORDS); });
+  if (noteAt === -1) noteAt = tokens.length;
+  const wordy = function (t) { return /[a-zÀ-ɏ]/i.test(t.clean) && !/\d/.test(t.clean); };
+
+  // Unknown names: leftover words before the note. In a split, only Capitalized words count
+  // as names (lowercase leftovers like "makan" are the note).
+  const unknown = [];
+  const noteWords = [];
+  tokens.forEach(function (t, i) {
+    if (t.used) return;
+    if (i >= noteAt) { if (!isIn(t, NOTE_START_WORDS) || i > noteAt) noteWords.push(t.raw); return; }
+    if (!wordy(t)) { noteWords.push(t.raw); return; }
+    const capital = /^[A-Z]/.test(t.raw.replace(/^[("'“]+/, ''));
+    if (kind === 'split' && !capital) { noteWords.push(t.raw); return; }
+    unknown.push({ name: t.raw.replace(/[,;.:!?]+$/, ''), index: i });
+  });
+
+  // For one-person commands, neighbouring unknown words form one name ("Budi Santoso").
+  let names;
+  if (kind === 'split' || group) {
+    names = contacts.map(function (c) { return { name: c.name, index: c.index, known: true }; })
+      .concat(unknown.map(function (u) { return { name: u.name, index: u.index, known: false }; }));
+  } else if (contacts.length) {
+    names = [{ name: contacts[0].name, index: contacts[0].index, known: true }];
+    unknown.forEach(function (u) { noteWords.push(u.name); });
+  } else if (unknown.length) {
+    const run = [unknown[0]];
+    for (let k = 1; k < unknown.length && run.length < 3; k++) {
+      if (unknown[k].index === run[run.length - 1].index + 1) run.push(unknown[k]); else break;
+    }
+    names = [{ name: run.map(function (u) { return u.name; }).join(' '), index: run[0].index, known: false }];
+    unknown.slice(run.length).forEach(function (u) { noteWords.push(u.name); });
+  } else {
+    names = [];
+  }
+  names.sort(function (a, b) { return a.index - b.index; });
+
+  // Pair amounts with the name (or "saya") right before them; the rest is the total.
+  const slots = names.map(function (n) { return { name: n.name, known: n.known, index: n.index, amount: null }; });
+  meTokens.forEach(function (i) { slots.push({ isMe: true, index: i, amount: null }); });
+  slots.sort(function (a, b) { return a.index - b.index; });
+  const totals = [];
+  amounts.forEach(function (a) {
+    const at = a.tokens[0];
+    const owner = slots.filter(function (s) { return s.index < at; }).pop();
+    const nextSlot = slots.filter(function (s) { return s.index > (owner ? owner.index : -1) && s.index < at; })[0];
+    if (owner && owner.amount === null && !nextSlot && (kind === 'split' || group)) owner.amount = a;
+    else totals.push(a);
+  });
+  if (totals.length > 1) return { ok: false, error: 'multiple_amounts', amounts: totals.map(function (a) { return a.text; }) };
+  const totalAmt = totals[0] || null;
+  const unclear = function (a) { return a && a.ambiguous; };
+
+  const note = noteWords.join(' ').replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, '');
+  const base = {
+    ok: true, kind: kind, debtType: debtType, term: term, date: start.date || new Date(now.getTime()),
+    dateNeedsConfirm: !!start.needsConfirm, dateText: start.text || '', due: due.date || null,
+    wallet: wallet, walletChoices: walletChoices, note: note, id: idTok ? idTok.clean.toUpperCase() : null, full: full
+  };
+
+  if (kind === 'split' || (kind === 'new' && group)) {
+    const people = slots.filter(function (s) { return !s.isMe; });
+    if (people.length === 0) return { ok: false, error: kind === 'split' ? 'split_no_people' : 'debt_no_name' };
+    if (kind === 'new' && people.length < 2) return { ok: false, error: 'group_few_people' };
+    if (unclear(totalAmt) || slots.some(function (s) { return unclear(s.amount); })) return { ok: false, error: 'debt_amount_unclear' };
+    const meSlot = slots.filter(function (s) { return s.isMe; })[0];
+    const includeMe = kind === 'split' && !notMe;
+    const shares = computeShares_(
+      people.map(function (s) { return { name: s.name, amount: s.amount ? s.amount.value : null }; }),
+      totalAmt ? totalAmt.value : 0,
+      includeMe ? { amount: meSlot && meSlot.amount ? meSlot.amount.value : null } : null);
+    if (shares.error) return { ok: false, error: shares.error, sum: shares.sum, total: shares.total };
+    let category = null;
+    let categoryHow = '';
+    if (kind === 'split') {
+      const c = tag !== null ? findCategoryByTag_(tag, ctx.categories, ['Expense']) : null;
+      if (c) { category = c.name; categoryHow = 'tag'; }
+      else {
+        const k = matchKeyword_(note, ctx.categories, ['Expense']);
+        if (k) { category = k.category; categoryHow = 'keyword'; }
+      }
+    }
+    return Object.assign(base, {
+      group: kind === 'new', total: shares.total, me: shares.me, includeMe: includeMe, category: category,
+      categoryHow: categoryHow,
+      people: shares.people.map(function (p) {
+        const s = people.filter(function (x) { return x.name === p.name; })[0];
+        return { name: p.name, known: s.known, amount: p.amount };
+      })
+    });
+  }
+
+  const person = names[0] || null;
+  const single = Object.assign(base, {
+    name: person ? person.name : null, known: person ? person.known : false,
+    amount: totalAmt && !totalAmt.ambiguous ? totalAmt.value : null,
+    amountOptions: totalAmt && totalAmt.ambiguous ? totalAmt.ambiguous.options : null,
+    amountText: totalAmt ? totalAmt.text : ''
+  });
+  if (kind === 'convert') {
+    const c = tag !== null ? findCategoryByTag_(tag, ctx.categories, ['Expense', 'Income']) : null;
+    single.category = c ? c.name : null;
+  }
+  if (kind === 'new' && !totalAmt) return { ok: false, error: 'debt_no_amount' };
+  if (kind === 'add' && !totalAmt) return { ok: false, error: 'debt_no_amount' };
+  if (kind === 'pay' && !totalAmt && !full) return { ok: false, error: 'debt_no_amount' };
+  if ((kind === 'pay' || kind === 'add' || kind === 'convert') && !single.id && !single.name) {
+    return { ok: false, error: 'debt_no_name' };
+  }
+  return single;
+}

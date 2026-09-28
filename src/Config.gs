@@ -46,7 +46,7 @@ const TAB = {
 const LISTS = {
   TRX_TYPES: ['Income', 'Expense', 'Transfer', 'Adjustment', 'Piutang', 'Hutang',
     'Settlement', 'Addition', 'Conversion', 'Investment Buy', 'Investment Sell'],
-  DIRECTIONS: ['In', 'Out', 'Transfer'],
+  DIRECTIONS: ['In', 'Out', 'Transfer', 'None'], // None = no money moves (debt conversions)
   CATEGORY_SOURCES: ['Manual', 'Keyword', 'AI'],
   INPUT_SOURCES: ['Text', 'OCR', 'Favorite', 'Sheet'],
   CATEGORY_TYPES: ['Income', 'Expense', 'Investment', 'Adjustment'],
@@ -78,6 +78,8 @@ const SETTING = {
   BUDGET_PASSWORD: 'Password for /budget',
   ADJUST_PASSWORD: 'Password for /adjust',
   ADJUST_AUTO_DELETE: 'Adjust auto-delete',
+  OPEN_PASSWORD: 'Password for /open',
+  OPEN_AUTO_DELETE: 'Open auto-delete',
   SPENDING_GROUPS: 'Spending Wallet Groups',
   INVESTMENT_GROUPS: 'Investment Wallet Groups'
 };
@@ -100,6 +102,8 @@ const SETTING_ROWS = [
   [SETTING.BUDGET_PASSWORD, 'No', 'Yes = /budget asks for the password (same as /saldo). No = /budget shows right away.'],
   [SETTING.ADJUST_PASSWORD, 'Yes', 'Yes = /adjust asks for the password first (it shows balances). No = it starts right away.'],
   [SETTING.ADJUST_AUTO_DELETE, 'Yes', 'Yes = /adjust messages are deleted 60s after you finish (or when an unanswered preview expires). No = they stay.'],
+  [SETTING.OPEN_PASSWORD, 'No', 'Yes = /open asks for the password (same as /saldo). No = /open shows right away.'],
+  [SETTING.OPEN_AUTO_DELETE, 'Yes', 'Yes = the /open reply is deleted after 60s. No = it stays.'],
   [SETTING.SPENDING_GROUPS, 'Spending', 'Wallet groups offered as buttons for expenses (comma-separated).'],
   [SETTING.INVESTMENT_GROUPS, 'Investment', 'Wallet groups that hold investment money: not usable for expenses/income, hidden in /saldo (shown in /saldo all). Transfers are fine.'],
   ['Daily Reminder Time', '08:00', 'Hour for the daily hutang/piutang reminder (HH:MM).'],
@@ -120,6 +124,9 @@ const BUDGET_REPLY_DELETE_SECONDS = 60;
 
 /** /adjust messages are deleted this many seconds after the flow ends (when Adjust auto-delete = Yes). */
 const ADJUST_DELETE_SECONDS = 60;
+
+/** The /open reply is deleted this many seconds after it's sent (when Open auto-delete = Yes). */
+const OPEN_DELETE_SECONDS = 60;
 
 /** Settings rows from earlier versions that are no longer used; upgradeSettings() removes them. */
 const OBSOLETE_SETTINGS = ['Saldo auto-delete (seconds)', 'Budget auto-delete (seconds)'];

@@ -124,14 +124,22 @@ function getSchema_() {
       { h: 'Wallet', ref: [T.WALLETS, 'Wallet'] },
       { h: 'Category', ref: [T.CATEGORIES, 'Category'] },
       { h: 'Original', fmt: FMT.RP },
-      { h: 'Added', fmt: FMT.RP },
-      { h: 'Paid', fmt: FMT.RP },
+      // Added / Paid / Converted are summed from Transactions by Debt ID (a group parent also
+      // sums its sub-records PTG-010-A, -B…), so /undo and sheet edits always stay correct.
+      { h: 'Added', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Type', 'Addition'); } },
+      { h: 'Paid', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Type', 'Settlement'); } },
+      { h: 'Converted', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Direction', 'None'); } },
       { h: 'Remaining', fmt: FMT.RP, formula: function (r) {
         const D = T.DEBTS;
-        return 'ARRAYFORMULA(IF(' + r(D, 'Original') + '="",,IFERROR(' + r(D, 'Original') + '+' +
-          r(D, 'Added') + '-' + r(D, 'Paid') + ',"Check amounts")))';
+        return 'MAP(' + r(D, 'Debt ID') + ',' + r(D, 'Original') + ',' + r(D, 'Added') + ',' + r(D, 'Paid') + ',' +
+          r(D, 'Converted') + ',LAMBDA(id,o,a,p,c,IF(id="",,N(o)+N(a)-N(p)-N(c))))';
       } },
-      { h: 'Status', list: LISTS.DEBT_STATUSES, w: 100 },
+      { h: 'Status', w: 100, formula: function (r) {
+        // Remaining ≤ 0 → Converted (if any part was converted) or Paid; otherwise Partial / Open.
+        const D = T.DEBTS;
+        return 'MAP(' + r(D, 'Debt ID') + ',' + r(D, 'Remaining') + ',' + r(D, 'Paid') + ',' + r(D, 'Converted') +
+          ',LAMBDA(id,m,p,c,IF(id="",,IF(N(m)<=0,IF(N(c)>0,"Converted","Paid"),IF(N(p)+N(c)>0,"Partial","Open")))))';
+      } },
       { h: 'Converted Trx', w: 110 },
       { h: 'Last Reminder', fmt: FMT.DATE },
       { h: 'Snoozed Until', fmt: FMT.DATE }
@@ -275,6 +283,18 @@ function getSchema_() {
       { h: 'Details', w: 400 }
     ] }
   ];
+}
+
+/**
+ * Per debt row: sum of Transactions amounts with this Debt ID (and its
+ * sub-records "ID-*") where column `col` equals `value`.
+ */
+function debtSumFormula_(r, col, value) {
+  const D = TAB.DEBTS, X = TAB.TRANSACTIONS;
+  const sum = function (idExpr) {
+    return 'SUMIFS(' + r(X, 'Amount') + ',' + r(X, 'Debt ID') + ',' + idExpr + ',' + r(X, col) + ',"' + value + '")';
+  };
+  return 'MAP(' + r(D, 'Debt ID') + ',LAMBDA(id,IF(id="",,' + sum('id') + '+' + sum('id&"-*"') + ')))';
 }
 
 // Investment formula pieces: remaining quantity, value at current price
@@ -543,6 +563,55 @@ function upgradeCategoryBudgetColumns_(ss) {
 }
 
 /**
+ * Phase 4: turns Added / Paid / Status of an existing Hutang_Piutang tab into
+ * formula columns, adds Converted (after Paid) and replaces the old
+ * Remaining formula. A column that already has typed values is left alone
+ * and reported, so no data is ever overwritten.
+ */
+function upgradeDebtColumns_(ss) {
+  const sheet = ss.getSheetByName(TAB.DEBTS);
+  const schema = getSchema_().filter(function (t) { return t.name === TAB.DEBTS; })[0].columns;
+  const col = function (h) { return getHeaderMap_(sheet)[h.toLowerCase()]; };
+  const hasData = function (c) {
+    const last = sheet.getLastRow();
+    if (last < 2) return false;
+    return sheet.getRange(2, c + 1, last - 1, 1).getValues().some(function (r) { return String(r[0]).trim() !== ''; });
+  };
+  const done = [];
+  const skipped = [];
+  const locale = ss.getSpreadsheetLocale();
+  ss.setSpreadsheetLocale('en_US'); // formulas use English syntax
+  try {
+    if (col('converted') === undefined && col('paid') !== undefined) {
+      sheet.insertColumnAfter(col('paid') + 1);
+      sheet.getRange(1, col('paid') + 2).setValue('Converted');
+      done.push('added Converted');
+    }
+    ['Added', 'Paid', 'Converted', 'Remaining', 'Status'].forEach(function (h) {
+      SpreadsheetApp.flush(); // earlier formula headers must be readable before later ones refer to them
+      const c = col(h);
+      if (c === undefined) return;
+      const formula = sheet.getRange(1, c + 1).getFormula();
+      const wanted = schema.filter(function (x) { return x.h === h; })[0];
+      const expected = '={"' + h + '";' + wanted.formula(makeSheetResolver_(ss)) + '}';
+      if (formula === expected) return;
+      if (formula === '' && hasData(c)) { skipped.push(h + ' (has typed values)'); return; }
+      const data = sheet.getRange(2, c + 1, sheet.getMaxRows() - 1, 1);
+      data.clearDataValidations();
+      if (formula === '') data.clearContent();
+      sheet.getRange(1, c + 1).setValue(h);
+      setupFormulaColumn_(sheet, c + 1, wanted, makeSheetResolver_(ss));
+      done.push(h + ' → formula');
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    ss.setSpreadsheetLocale(locale);
+  }
+  return 'Hutang_Piutang: ' + (done.length ? done.join(', ') : 'already up to date') +
+    (skipped.length ? '. NOT changed: ' + skipped.join(', ') + ' — clear those cells and run again' : '');
+}
+
+/**
  * Creates any tab from the schema that an existing spreadsheet doesn't have
  * yet (e.g. Budget_History), with headers, formats, dropdowns and
  * protection, at the end. Existing tabs are never touched.
@@ -576,6 +645,7 @@ function upgradeSheets() {
     const ss = SpreadsheetApp.openById(id);
     console.log(ss.getName() + ' → ' + upgradeMissingTabs_(ss));
     console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
+    console.log(ss.getName() + ' → ' + upgradeDebtColumns_(ss));
   });
   upgradeSettings();
   validateSheet();

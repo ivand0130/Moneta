@@ -269,6 +269,40 @@ Convert / close hutang/piutang:
 - The bot must ask for (or AI-suggest) a category and confirm before converting
 - Status becomes Converted, linked to the new Income/Expense Trx ID
 
+Decisions made in Phase 4 (owner):
+- IDs: PTG-001 / HTG-001 (3 digits); group sub-records PTG-010-A, -B…
+- Hutang_Piutang: Original is written by the bot; Added, Paid, Converted,
+  Remaining and Status are SHEET FORMULAS summed from Transactions by Debt ID
+  (a group parent sums its sub-records), so /undo and manual edits can never
+  leave a wrong status. Status: Remaining ≤ 0 → Converted (if any part was
+  converted) or Paid; otherwise Partial (something paid/converted) or Open
+- Transactions rows per event (all carry the Debt ID): lend = Piutang (Out),
+  borrow = Hutang (In), they pay back = Settlement (In), I pay back =
+  Settlement (Out), add = Addition (Out for piutang, In for hutang)
+- A conversion is an Expense (piutang) or Income (hutang) row with Direction
+  "None": it counts as expense/income everywhere (budgets, Spent column,
+  reports, Dashboard) but moves no money (it already moved when lent). The
+  shared "counts as expense" rule therefore stays Type = Expense. The
+  record's own category (e.g. Food from a split bill) is suggested
+- Overpayment (pays more than remaining): [Correct the amount] [Extra is
+  income / an expense] [Extra becomes a new hutang / piutang in the other
+  direction]. The Settlement row is capped at the remaining amount
+- Equal split: friends get the amount rounded down, I take the leftover
+  (400rb / 3 → 133.333 + 133.333 + me 133.334). Without me, the first person
+  takes it. A split always includes me unless "tanpa saya"
+- Names: matched against Contacts (name or alias, any case). A new name in a
+  new debt is shown as "New contact" and added to Contacts on save. In a
+  split, unknown names must start with a capital letter (lowercase words are
+  the note, e.g. "makan"). Several open records for a name → pick; none →
+  "No open … for X. Create a new one, or check the spelling?"
+- Group parents are not picked by name; payments/additions go to a person's
+  sub-record. Converting a group converts every open sub-record
+- /open: "Password for /open" (default No) and "Open auto-delete" (default
+  Yes, 60 seconds), spoiler amounts, groups listed with their people
+- /undo: undoing a new debt also removes its record(s) (blocked while later
+  payments/additions exist — undo those first); undoing a conversion reopens
+  the record; undoing a payment just removes it
+
 ## 8. Investment Tracker
 
 ### Structure
@@ -677,7 +711,8 @@ and my partner, main sheet ID, archive folder ID, receipts folder ID, reminder
 times, thresholds (large amount, duplicate window, reminder days), timezone,
 AI on/off, Gemini model, Hide amounts (yes/no), Password (numbers only),
 Password for /saldo (yes/no), Password for /budget (yes/no), Password for
-/adjust (yes/no), Adjust auto-delete (yes/no), Spending
+/adjust (yes/no), Adjust auto-delete (yes/no), Password for /open (yes/no),
+Open auto-delete (yes/no), Spending
 Wallet Groups, Investment Wallet Groups, Budget auto-delete (yes/no).
 Helper lists: Owners, Investment Categories, Wallet Groups.
 (Bot token, Gemini key and folder/sheet IDs are stored in Script

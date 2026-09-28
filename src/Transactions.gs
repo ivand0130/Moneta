@@ -6,7 +6,8 @@
  *   Income → In, Expense → Out, Transfer → Transfer (Wallet → To Wallet).
  */
 
-const DIRECTION_BY_TYPE = { Income: 'In', Expense: 'Out', Transfer: 'Transfer' };
+const DIRECTION_BY_TYPE = { Income: 'In', Expense: 'Out', Transfer: 'Transfer', Piutang: 'Out', Hutang: 'In' };
+// Settlement / Addition get their direction from the debt (piutang or hutang); conversions use 'None'.
 const CATEGORY_SOURCE_BY_HOW = { tag: 'Manual', chosen: 'Manual', keyword: 'Keyword', ai: 'AI' };
 
 /**
@@ -24,12 +25,13 @@ function writeTransaction_(ss, d, loggedBy, linkId) {
     'Logged By': loggedBy,
     'Type': d.type,
     'Amount': d.amount,
-    'Direction': DIRECTION_BY_TYPE[d.type],
-    'Category': d.type === 'Transfer' ? '' : d.category,
-    'Category Source': d.type === 'Transfer' ? '' : (CATEGORY_SOURCE_BY_HOW[d.categoryHow] || 'Manual'),
+    'Direction': d.direction || DIRECTION_BY_TYPE[d.type],
+    'Category': d.category || '',
+    'Category Source': d.category ? (CATEGORY_SOURCE_BY_HOW[d.categoryHow] || 'Manual') : '',
     'Wallet': d.wallet,
     'To Wallet': d.type === 'Transfer' ? d.toWallet : '',
     'Note': d.note,
+    'Debt ID': d.debtId || '',
     'Input Source': 'Text'
   });
   return id;

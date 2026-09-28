@@ -169,6 +169,14 @@ function handleText_(message) {
       case '/adjust':
         startAdjust_(chatId, args, message.message_id);
         return;
+      case '/open':
+        startOpen_(chatId);
+        return;
+      case '/contact':
+      case '/contacts':
+        if (sub === 'add') startContactAdd_(chatId, args.slice(3).trim());
+        else sendMessage(chatId, buildContactListText_(loadContacts_(openMainSheet_())));
+        return;
       case '/budget':
         startBudget_(chatId, args);
         return;
@@ -205,6 +213,10 @@ function handleText_(message) {
     handlePendingText_(p, message);
     return;
   }
+  if (p && p.kind === 'debt' && p.awaitText) {
+    handleDebtText_(p, message);
+    return;
+  }
   startTransaction_(message);
 }
 
@@ -227,6 +239,13 @@ function buildHelpText_() {
     '• <code>25rb parkir kemarin</code> (or kmrn), <code>… tgl 10</code>, <code>… 20/09</code>, <code>… 5 okt</code> → another date',
     '• <code>30rb obat #health</code> → choose the category yourself',
     '',
+    '🤝 <b>Hutang / piutang</b>',
+    '• <code>piutang 500rb Budi</code> (you lend) · <code>pinjam 1jt dari Andi</code> (you borrow)',
+    '• <code>… jatuh tempo 30/10</code> · <code>piutang jangka panjang 10jt Budi</code>',
+    '• <code>piutang grup 600rb Budi, Andi, Citra</code> · <code>split 400rb makan Budi Andi termasuk saya</code>',
+    '• <code>Budi bayar 200rb</code> · <code>bayar hutang Andi 500rb</code> · <code>Budi lunas</code>',
+    '• <code>tambah piutang Budi 100rb</code> · <code>tutup piutang PTG-001</code> (turn it into an expense)',
+    '',
     'Amounts: 50000 · 50.000 · 50k · 50rb · 1.5jt · 2juta',
     'Wallet: write its name anywhere (BCA, GoPay…). No wallet? I use the category\'s default or ask.',
     'Nothing is saved until you tap ✅ Yes on the preview. ✏️ Edit changes any part.',
@@ -237,6 +256,8 @@ function buildHelpText_() {
     '   One wallet, group or owner: <code>/saldo bca</code>, <code>/saldo spending</code>, <code>/saldo me</code>',
     '/budget — budgets this month (spent, remaining) · <code>/budget food</code>',
     '/undo — delete your last entry',
+    '/open — open hutang / piutang',
+    '/contact — contacts and aliases · <code>/contact add Budi, Budi Santoso</code>',
     '/wallet — list wallets · <code>/wallet add Jenius</code>',
     '/category or /cat — list categories · <code>/cat add Pets</code>',
     '/changepass — change the /saldo password (default 0000)',

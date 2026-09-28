@@ -90,10 +90,11 @@ function lastDataRow_(sheet, keyHeader) {
 }
 
 /**
- * Next ID like TRX-0124: highest existing number in the column + 1.
+ * Next ID like TRX-0124 (or PTG-001 with digits = 3): highest existing
+ * number in the column + 1. Sub-records like PTG-010-A are not counted.
  * Call inside withScriptLock_ so two users can't get the same ID.
  */
-function nextId_(sheet, header, prefix) {
+function nextId_(sheet, header, prefix, digits) {
   const col = getHeaderMap_(sheet)[header.toLowerCase()];
   if (col === undefined) throw new Error('Column "' + header + '" not found in tab ' + sheet.getName());
   let max = 0;
@@ -105,7 +106,7 @@ function nextId_(sheet, header, prefix) {
       if (m) max = Math.max(max, Number(m[1]));
     });
   }
-  return prefix + '-' + String(max + 1).padStart(4, '0');
+  return prefix + '-' + String(max + 1).padStart(digits || 4, '0'); // debts use 3 digits (PTG-001)
 }
 
 /**

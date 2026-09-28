@@ -94,6 +94,7 @@ function loadCtx_() {
     ss: ss,
     wallets: loadWallets_(ss),
     categories: loadCategories_(ss),
+    contacts: loadContacts_(ss),
     investmentGroups: getSettingList_(SETTING.INVESTMENT_GROUPS),
     spendingGroups: getSettingList_(SETTING.SPENDING_GROUPS)
   };
@@ -107,6 +108,14 @@ function loadCtx_() {
 function startTransaction_(message) {
   const chatId = String(message.chat.id);
   const ctx = loadCtx_();
+  // Hutang / piutang / split bill messages go to Debts.gs first.
+  const debt = parseDebt_(message.text, { wallets: ctx.wallets, categories: ctx.categories, contacts: ctx.contacts,
+    investmentGroups: ctx.investmentGroups, now: new Date() });
+  if (debt) {
+    ctx.debts = loadDebts_(ctx.ss);
+    startDebt_(chatId, debt, ctx);
+    return;
+  }
   let parsed = parseTransaction_(message.text, {
     wallets: ctx.wallets, categories: ctx.categories, investmentGroups: ctx.investmentGroups, now: new Date()
   });
@@ -711,7 +720,8 @@ function kwCallback_(p, action, arg) {
 function startUndo_(chatId, user) {
   const ss = openMainSheet_();
   const loggedBy = user && user.name ? user.name : String(chatId);
-  const group = findLastEntryGroup_(loadTransactions_(ss), loggedBy);
+  const rows = loadTransactions_(ss);
+  const group = findLastEntryGroup_(rows, loggedBy);
   if (group.length === 0) {
     sendMessage(chatId, 'Nothing to undo: no entries logged by ' + escapeHtml_(loggedBy) + '.');
     return;
@@ -720,20 +730,37 @@ function startUndo_(chatId, user) {
     sendMessage(chatId, "⛔ Your last entry is in a closed month and can't be undone.");
     return;
   }
+  // Hutang/piutang: a new record goes too; a conversion reopens its record; blocked if payments exist.
+  const plan = debtUndoPlan_(ss, group, rows);
+  if (plan.blocked) {
+    sendMessage(chatId, "⛔ Can't undo yet. " + escapeHtml_(plan.blocked));
+    return;
+  }
   const p = newPending_(chatId, 'undo', {
     ids: group.map(function (r) { return String(r['trx id']).trim(); }).filter(String)
   });
   const linked = group.length > 1;
+  const extra = (plan.deleteDebts.length ? '\nAlso removes record ' + plan.deleteDebts.join(', ') + ' from Hutang_Piutang.' : '') +
+    (plan.reopen.length ? '\nReopens ' + plan.reopen.join(', ') + ' (the conversion is undone).' : '');
   showStep_(p, '↩️ Delete your last entry' + (linked ? ' — it is a linked group of ' + group.length +
-    ' entries, which are deleted together' : '') + '?\n' + group.map(describeRow_).join('\n'),
+    ' entries, which are deleted together' : '') + '?\n' + group.map(describeRow_).join('\n') + escapeHtml_(extra),
     [[btn_(p, linked ? '🗑️ Delete all ' + group.length : '🗑️ Delete', 'y'), btn_(p, '❌ Cancel', 'n')]]);
 }
 
 function undoCallback_(p, action) {
   if (action !== 'y') return finishStep_(p, 'OK, kept it.');
   if (!claimPending_(p)) return;
-  const deleted = deleteTransactions_(openMainSheet_(), p.d.ids);
-  finishStep_(p, deleted.length ? '🗑️ Deleted ' + deleted.join(', ') + '.' : 'Those entries were already gone.');
+  const ss = openMainSheet_();
+  const rows = loadTransactions_(ss);
+  const group = rows.filter(function (r) { return p.d.ids.indexOf(String(r['trx id']).trim()) !== -1; });
+  const plan = debtUndoPlan_(ss, group, rows); // checked again: something may have been logged meanwhile
+  if (plan.blocked) return finishStep_(p, "⛔ Can't undo yet. " + escapeHtml_(plan.blocked));
+  const deleted = deleteTransactions_(ss, p.d.ids);
+  applyDebtUndo_(ss, plan);
+  finishStep_(p, deleted.length ? '🗑️ Deleted ' + deleted.join(', ') +
+    (plan.deleteDebts.length ? ' and record ' + plan.deleteDebts.join(', ') : '') +
+    (plan.reopen.length ? '; ' + plan.reopen.join(', ') + (plan.reopen.length > 1 ? ' are' : ' is') + ' open again' : '') + '.' :
+    'Those entries were already gone.');
 }
 
 // ---------------------------------------------------------------------------
@@ -858,6 +885,8 @@ function handleCallback_(cq) {
   else if (p.kind === 'wadd') walletAddCallback_(p, action, arg);
   else if (p.kind === 'cadd') categoryAddCallback_(p, action, arg);
   else if (p.kind === 'adj') adjustCallback_(p, action, arg, getUserByChatId_(chatId));
+  else if (p.kind === 'debt') debtCallback_(p, action, arg, getUserByChatId_(chatId));
+  else if (p.kind === 'contact') contactCallback_(p, action);
 }
 
 /** Friendly reply for a message the parser couldn't use. */

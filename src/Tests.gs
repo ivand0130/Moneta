@@ -510,9 +510,10 @@ function testLinkedEntries() {
   const withExtra = function (x) { return Object.assign({}, base, { extra: x }); };
   const fee = entriesOf_(withExtra({ kind: 'fee', amount: 2500, category: 'Admin & Bank Fees', categoryHow: 'keyword' }));
   t('fee: 2 rows', fee.length, 2);
-  t('fee: transfer keeps the full amount', fee[0].amount, 1000000);
+  t('fee: comes out of the amount', fee[0].amount, 997500);
   t('fee: expense from the source', fee[1].wallet + ' ' + fee[1].amount, 'BCA 2500');
-  t('fee: BCA pays on top', JSON.stringify(walletDeltas_(fee)), JSON.stringify({ BCA: -1002500, GoPay: 1000000 }));
+  t('fee: BCA −1.000.000 in total, GoPay receives 997.500', JSON.stringify(walletDeltas_(fee)),
+    JSON.stringify({ BCA: -1000000, GoPay: 997500 }));
   const src = entriesOf_(withExtra({ kind: 'partial', amount: 200000, from: 'source', category: 'Food', note: 'makan' }));
   t('partial from source: transfer shrinks', src[0].amount, 800000);
   t('partial from source: effects', JSON.stringify(walletDeltas_(src)), JSON.stringify({ BCA: -1000000, GoPay: 800000 }));
@@ -552,4 +553,40 @@ function testAiParse() {
   t('looksLikeMoney_ words', looksLikeMoney_('kopi dua puluh ribu') && looksLikeMoney_('goceng parkir'), true);
   t('looksLikeMoney_ greeting', looksLikeMoney_('hello bot'), false);
   console.log((pass === 12 ? 'PASS' : 'FAIL') + ': testAiParse ' + pass + '/12');
+}
+
+/**
+ * Run from the editor when AI doesn't seem to work. Checks the key, the
+ * setting, whether the model name exists (and lists the Flash models Google
+ * offers), then reads a sample message. The key is never printed.
+ */
+function testGemini() {
+  const key = getProp_(PROP.GEMINI_KEY);
+  console.log((key ? 'PASS' : 'FAIL') + ': GEMINI_KEY is set');
+  loadSettingsTab_(true);
+  const model = getSetting_(SETTING.GEMINI_MODEL);
+  console.log((getSettingYes_(SETTING.AI_ENABLED) ? 'PASS' : 'FAIL') + ': AI Enabled = ' + getSetting_(SETTING.AI_ENABLED));
+  console.log('Gemini Model (Settings) = ' + model);
+  if (!key) return;
+
+  const list = UrlFetchApp.fetch(GEMINI_URL, { headers: { 'x-goog-api-key': key }, muteHttpExceptions: true });
+  if (list.getResponseCode() !== 200) {
+    console.log('FAIL: listing models → HTTP ' + list.getResponseCode() + ': ' + list.getContentText().slice(0, 300));
+    return;
+  }
+  const names = (JSON.parse(list.getContentText()).models || []).map(function (m) { return m.name.replace('models/', ''); });
+  const known = names.indexOf(model) !== -1;
+  console.log((known ? 'PASS' : 'FAIL') + ': model "' + model + '" ' + (known ? 'exists' : 'is NOT offered to this key'));
+  console.log('Flash models you can put in Settings → Gemini Model: ' +
+    names.filter(function (n) { return /flash/.test(n); }).join(', '));
+
+  const answer = callGeminiJson_('Reply with JSON only: {"ok": true}', 'test');
+  console.log((answer && answer.ok === true ? 'PASS' : 'FAIL') + ': simple JSON call' +
+    (answer ? '' : ' (see the newest WARN line in the Logs tab for the reason)'));
+
+  const ai = aiParseTransaction_('kopi dua puluh ribu pakai gopay', loadCtx_(), new Date());
+  const good = ai && ai.ok && ai.amount === 20000;
+  console.log((good ? 'PASS' : 'FAIL') + ': "kopi dua puluh ribu pakai gopay" → ' +
+    (ai && ai.ok ? ai.type + ' ' + ai.amount + ' ' + (ai.wallet || '(no wallet)') + ' ' + (ai.category || '(no category)')
+      : JSON.stringify(ai)));
 }

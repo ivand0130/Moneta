@@ -103,7 +103,11 @@ function looksLikeMoney_(text) {
     /(^|[^a-z])(ribu|rb|juta|jt|ratus|puluh|belas|seribu|sejuta|seratus|sepuluh|goceng|gocap|ceban|cepek|thousand|million|hundred)([^a-z]|$)/i.test(text);
 }
 
-/** Asks Gemini to read the message. Returns a parser-style result ({ ok: true, … readByAi }) or null. */
+/**
+ * Asks Gemini to read the message. Returns a parser-style result
+ * ({ ok: true, … readByAi }), null if Gemini says it isn't one transaction,
+ * or { ok: false, failed: true } if the call failed (see the Logs tab).
+ */
 function aiParseTransaction_(text, ctx, now) {
   const wallets = ctx.wallets.filter(function (w) { return w.active && w.type === 'Cash'; }).map(function (w) { return w.name; });
   const cats = function (type) {
@@ -124,7 +128,8 @@ function aiParseTransaction_(text, ctx, now) {
     ' "category": "exact category name or empty"}'
   ].join('\n');
   const answer = callGeminiJson_(prompt, 'parse');
-  return answer === null ? null : validateAiTransaction_(answer, ctx, now);
+  if (answer === null) return { ok: false, failed: true }; // the call itself failed (logged)
+  return validateAiTransaction_(answer, ctx, now);
 }
 
 /**

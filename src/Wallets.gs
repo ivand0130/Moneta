@@ -159,32 +159,34 @@ function unique_(values, keepEmpty) {
 // spoiler helper. With "Adjust auto-delete" = Yes the bot's /adjust message is
 // deleted 60s after the flow ends, or when an unanswered preview expires.
 
-function startAdjust_(chatId, args) {
+function startAdjust_(chatId, args, cmdId) {
   if (!String(args || '').trim()) {
     sendMessage(chatId, 'Write the wallet and its actual balance, e.g. <code>/adjust BCA 10.200.000</code>');
     return;
   }
   loadSettingsTab_(true); // fresh, so the switches apply right away
   if (getSettingYes_(SETTING.ADJUST_PASSWORD)) {
-    askPassword_(chatId, 'adjust', { filter: args }, '🔒 Enter the password to adjust a balance.\n' +
+    askPassword_(chatId, 'adjust', { filter: args, cmdId: cmdId }, '🔒 Enter the password to adjust a balance.\n' +
       '<i>You can turn this off in Settings → Password for /adjust.</i>');
     return;
   }
-  beginAdjust_(chatId, args);
+  beginAdjust_(chatId, args, cmdId);
 }
 
-/** After the password (if any): parse and start the adjust flow. */
-function beginAdjust_(chatId, args) {
+/** After the password (if any): parse and start the adjust flow. cmdId = your /adjust message. */
+function beginAdjust_(chatId, args, cmdId) {
   const ss = openMainSheet_();
   const r = parseAdjust_(args, { wallets: loadWallets_(ss), now: new Date() });
   if (!r.ok) {
     sendMessage(chatId, adjustErrorText_(r));
+    // The command may contain a balance: it disappears too.
+    if (cmdId && getSettingYes_(SETTING.ADJUST_AUTO_DELETE)) scheduleDelete_(chatId, cmdId, ADJUST_DELETE_SECONDS);
     return;
   }
   const p = newPending_(chatId, 'adj', {
     wallet: r.wallet, walletChoices: r.walletChoices, actual: r.actual, amountOptions: r.amountOptions,
     amountText: r.amountText, date: r.date.getTime(), dateNeedsConfirm: r.dateNeedsConfirm, dateText: r.dateText,
-    note: r.note
+    note: r.note, cmdId: cmdId || null
   });
   stepAdjust_(p);
 }
@@ -230,19 +232,26 @@ function stepAdjust_(p, notice) {
     [[btn_(p, '✅ Yes', 'y'), btn_(p, '❌ No', 'n')]]);
 }
 
-/** Shows a step; the first time, queues the message to vanish when the pending item expires. */
+/**
+ * Shows a step; the first time, queues the bot message AND your /adjust
+ * command to vanish when the pending item expires (if never answered).
+ */
 function showAdjustStep_(p, text, rows) {
   const isNew = !p.msgId;
   showStep_(p, text, rows);
-  if (isNew && getSettingYes_(SETTING.ADJUST_AUTO_DELETE)) scheduleDelete_(p.chatId, p.msgId, PENDING_TTL_SECONDS);
+  if (isNew && getSettingYes_(SETTING.ADJUST_AUTO_DELETE)) {
+    scheduleDelete_(p.chatId, p.msgId, PENDING_TTL_SECONDS);
+    if (p.d.cmdId) scheduleDelete_(p.chatId, p.d.cmdId, PENDING_TTL_SECONDS);
+  }
 }
 
-/** Ends the flow and (if Adjust auto-delete = Yes) deletes the message 60s later. */
+/** Ends the flow and (if Adjust auto-delete = Yes) deletes the bot message and your command 60s later. */
 function finishAdjust_(p, text) {
   const autoDelete = getSettingYes_(SETTING.ADJUST_AUTO_DELETE);
   finishStep_(p, text + (autoDelete ? '\n\n🕒 <i>This message will be deleted in ' +
     formatDelay_(ADJUST_DELETE_SECONDS) + '.</i>' : ''));
   if (autoDelete && p.msgId) scheduleDelete_(p.chatId, p.msgId, ADJUST_DELETE_SECONDS);
+  if (autoDelete && p.d.cmdId) scheduleDelete_(p.chatId, p.d.cmdId, ADJUST_DELETE_SECONDS); // your /adjust message too
 }
 
 function adjustCallback_(p, action, arg, user) {

@@ -167,7 +167,7 @@ function handleText_(message) {
         startSaldo_(chatId, args);
         return;
       case '/adjust':
-        startAdjust_(chatId, args);
+        startAdjust_(chatId, args, message.message_id);
         return;
       case '/budget':
         startBudget_(chatId, args);
@@ -221,9 +221,9 @@ function buildHelpText_() {
     '• <code>50rb makan siang di KFC</code> → expense',
     '• <code>+5jt gaji BCA</code> or <code>gaji 5jt BCA</code> → income',
     '• <code>transfer 1jt BCA ke GoPay</code> → transfer between your wallets',
-    '• <code>transfer 1jt BCA ke GoPay admin 2.5rb</code> → transfer + fee (paid on top by BCA)',
+    '• <code>transfer 1jt BCA ke GoPay admin 2.5rb</code> → transfer + fee (taken out of the 1jt)',
     '• <code>transfer 1jt BCA ke GoPay sampai 997.500</code> → I ask what the difference was',
-    '• <code>transfer 1jt BCA ke IPOT, 200rb untuk makan</code> → transfer + money spent',
+    '• <code>transfer 1jt BCA ke IPOT, 200rb untuk makan</code> → transfer, then 200rb spent from IPOT',
     '• <code>25rb parkir kemarin</code> (or kmrn), <code>… tgl 10</code>, <code>… 20/09</code>, <code>… 5 okt</code> → another date',
     '• <code>30rb obat #health</code> → choose the category yourself',
     '',

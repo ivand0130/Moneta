@@ -115,10 +115,13 @@ function startTransaction_(message) {
       looksLikeMoney_(message.text) && getSettingYes_(SETTING.AI_ENABLED)) {
     sendTyping_(chatId);
     const ai = aiParseTransaction_(message.text, ctx, new Date());
-    if (ai) parsed = ai;
+    if (ai && ai.ok) parsed = ai;
+    else if (ai && ai.failed) parsed.aiFailed = true;
   }
   if (!parsed.ok) {
-    sendMessage(chatId, parseErrorText_(parsed));
+    sendMessage(chatId, parseErrorText_(parsed) + (parsed.aiFailed
+      ? '\n\n🤖 <i>I also asked the AI to read it, but that failed. The reason is in the Logs tab ' +
+        '(or run testGemini in the editor).</i>' : ''));
     return;
   }
   const p = newPending_(chatId, 'trx', {
@@ -191,7 +194,7 @@ function advanceTrx_(p, ctx) {
           ') must be smaller than the transfer (' + formatRp_(d.amount) + '). Please correct it.',
           [[btn_(p, '✏️ Edit', 'e'), btn_(p, '❌ Cancel', 'n')]]);
       }
-      if (x.kind === 'partial' && !x.from) return askPartialFrom_(p);
+      if (x.kind === 'partial' && !x.from) x.from = 'dest'; // owner's rule: spent from the destination after arriving
       if (!ctx.categories.some(function (c) { return c.name === x.category && c.type === 'Expense'; })) {
         x.category = null;
         if (!x.aiTried) {
@@ -234,9 +237,11 @@ function advanceTrx_(p, ctx) {
 // ---------------------------------------------------------------------------
 // d.extra = { kind: 'fee' | 'partial' | 'received', amount, category,
 //             categoryHow, note, from: 'source' | 'dest' (partial only), suggested }
-//   fee      "admin X" / "dipotong X": Transfer = amount, fee paid ON TOP by the source
-//   partial  "Y untuk makan": from source → Transfer = amount − Y, expense from the source;
-//            from dest → Transfer = amount, expense from the destination
+//   fee      "admin X" / "dipotong X" / default fee / fee added in Edit: the fee comes OUT OF the
+//            amount — Transfer = amount − fee, expense from the source (source −amount in total)
+//   partial  "Y untuk makan": by default spent from the destination after arriving (Transfer =
+//            amount, expense from the destination); Edit can switch it to the source
+//            (Transfer = amount − Y, expense from the source)
 //   received "sampai R": asked first, then becomes a fee, a partial (source) or nothing
 
 /** A fee extra with the fee category (keyword "admin", else "Admin & Bank Fees", else asked). */
@@ -259,7 +264,7 @@ function entriesOf_(d) {
   const x = d.extra;
   if (d.type !== 'Transfer' || !x || x.kind === 'received') return [main];
   const fromSource = x.kind === 'fee' || x.from === 'source';
-  if (x.kind === 'partial' && x.from === 'source') main.amount = d.amount - x.amount;
+  if (fromSource) main.amount = d.amount - x.amount; // fee or source-spent part comes out of the amount
   const note = x.note || (x.kind === 'fee' ? 'Transfer fee ' : 'Spent during transfer ') + d.wallet + ' → ' + d.toWallet;
   return [main, { type: 'Expense', amount: x.amount, wallet: fromSource ? d.wallet : d.toWallet, toWallet: '',
     category: x.category, categoryHow: x.categoryHow, note: note, date: d.date }];
@@ -295,17 +300,6 @@ function askReceived_(p) {
     '<b>' + formatRp_(diff) + '</b> difference. What was it?',
     [[btn_(p, '💸 A fee', 'rx', 'fee'), btn_(p, '🛒 Spent on something', 'rx', 'spent')],
      [btn_(p, '✏️ Typo: the transfer was ' + formatRp_(received), 'rx', 'typo')], cancelRow_(p)]);
-}
-
-/** Partial expense: spent from the source before sending, or from the destination after? */
-function askPartialFrom_(p) {
-  const d = p.d;
-  const x = d.extra;
-  showStep_(p, '🔁 Transfer <b>' + formatRp_(d.amount) + '</b> ' + escapeHtml_(d.wallet) + ' → ' + escapeHtml_(d.toWallet) +
-    '\nIs the ' + formatRp_(x.amount) + (x.note ? ' (' + escapeHtml_(x.note) + ')' : '') + ' spent from <b>' +
-    escapeHtml_(d.wallet) + '</b> (only ' + formatRp_(d.amount - x.amount) + ' transferred) or from <b>' +
-    escapeHtml_(d.toWallet) + '</b> after the transfer?',
-    [[btn_(p, 'From ' + d.wallet, 'pf', 'source'), btn_(p, 'From ' + d.toWallet, 'pf', 'dest')], cancelRow_(p)]);
 }
 
 /** Gemini guess for the extra part's category (partial expenses with a note). */
@@ -528,8 +522,7 @@ function trxCallback_(p, action, arg, user) {
         const received = d.extra.amount;
         const diff = d.amount - received;
         if (arg === 'fee') {
-          d.amount = received; // fee on top of what actually moved
-          d.extra = newFeeExtra_(diff, ctx);
+          d.extra = newFeeExtra_(diff, ctx); // Transfer = sent − fee = what arrived
         } else if (arg === 'spent') {
           d.extra = { kind: 'partial', amount: diff, from: 'source', note: '', category: null, categoryHow: '' };
         } else {

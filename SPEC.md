@@ -193,16 +193,18 @@ The bot must support these inputs:
 - /undo on any linked entry asks whether to remove the whole linked group
 
 Decisions made in Phase 3 (owner):
-- "admin X" and "dipotong X" mean the same: the fee is paid ON TOP by the
-  source wallet. Transfer row = the full amount; Expense row = the fee, from
-  the source (BCA −1.002.500, GoPay +1.000.000)
+- EVERY fee comes OUT OF the amount — typed ("admin X", "dipotong X"), the
+  wallet's default fee, or a fee added in Edit. The From amount I typed
+  never changes: "transfer 1jt BCA ke GoPay admin 2rb" → Transfer Rp998.000
+  + Expense Rp2.000 (fee) from BCA; BCA −1.000.000, GoPay +998.000
 - "sampai R" (received less): the bot asks what the difference was —
   Fee → Transfer R + fee from the source; Spent on something → Transfer R +
   expense from the source (category asked); Typo → Transfer R only.
   Received more than sent → "was the transfer actually R?"
-- Partial spending ("200rb untuk makan") always asks: spent from the source
-  (Transfer = amount − spent) or from the destination after arriving
-  (Transfer = full amount, expense from the destination)
+- Partial spending ("transfer 1jt BCA ke Jago, 200rb untuk makan") means the
+  full 1jt went to Jago and the 200rb was then spent FROM JAGO — no question
+  asked: Transfer Rp1.000.000 + Expense Rp200.000 from Jago; BCA −1.000.000,
+  Jago +800.000. Edit can switch it to "spent from BCA"
 - The Wallets tab "Default Transfer Fee" of the SOURCE wallet is suggested
   automatically on a plain transfer (preview line "default fee for BCA",
   with a [No fee] button). Edit can add, change or remove a fee
@@ -214,8 +216,9 @@ Decisions made in Phase 3 (owner):
 Adjust balance, decisions made in Phase 3 (owner):
 - "Password for /adjust" (default Yes) and "Adjust auto-delete" (default
   Yes) in Settings. The preview hides amounts with the spoiler helper; with
-  auto-delete on, the /adjust message disappears 60 seconds after the flow
-  ends, or when an unanswered preview expires (10 minutes)
+  auto-delete on, the bot's /adjust message AND my /adjust command (which
+  contains the balance) disappear 60 seconds after the flow ends, or when an
+  unanswered preview expires (10 minutes)
 - A balance of 0 or a negative balance is allowed; an optional date and note
   can follow ("/adjust BCA 10.200.000 kemarin salah catat")
 - Investment category wallets (Wallet Type = Investment) can't be adjusted —
@@ -761,18 +764,16 @@ balances are only in /saldo.)
 
 Me:  transfer 1jt BCA ke GoPay admin 2.5rb
 Bot: Preview (LNK-0005):
-     1. Transfer Rp1.000.000 BCA (Spending) → GoPay (Spending)
+     1. Transfer Rp997.500 BCA (Spending) → GoPay (Spending)
      2. Expense Rp2.500 | Admin & Bank Fees | from BCA
-     BCA −Rp1.002.500 | GoPay +Rp1.000.000
+     BCA −Rp1.000.000 | GoPay +Rp997.500
      Save? [Yes] [No] [Edit]
 
 Me:  transfer 1jt BCA ke IPOT, 200rb dipakai bayar makan
-Bot: Is the Rp200.000 spent from BCA (only Rp800.000 transferred) or from
-     IPOT after the transfer? [From BCA] [From IPOT]
-Me:  From BCA
 Bot: Preview (LNK-0006):
-     1. Transfer Rp800.000 BCA (Spending) → IPOT (Investment)
-     2. Expense Rp200.000 | Food (AI) | from BCA
+     1. Transfer Rp1.000.000 BCA (Spending) → IPOT (Investment)
+     2. Expense Rp200.000 | Food (keyword) | from IPOT
+     BCA −Rp1.000.000 | IPOT +Rp800.000
      Save? [Yes] [No] [Edit]
 
 Me:  /adjust BCA 10.200.000

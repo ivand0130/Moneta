@@ -71,13 +71,44 @@ Phase 2 goal: log Income, Expense and simple Transfer end to end.
 Show me your plan and questions first.
 ```
 
+## Phase 2B — Budgeting
+```
+Read CLAUDE.md, SPEC.md (Section 25, Section 13 "Hiding sensitive amounts",
+Section 18 Tabs 3, 7, 15, 16) and PROGRESS.md.
+Phase 2B goal: budgets per category with a message after every save.
+- Budgets tab in getSchema_ (createTemplate + validateSheet): Category
+  dropdown from a new Settings helper list "Expense Categories", Monthly
+  Budget (Rp format), Notes. Also add the Budget_History tab (written in
+  Phase 8). Remove "Monthly Budget" from the Categories schema
+- An upgrade function for my EXISTING main sheet and template: add the
+  Budgets and Budget_History tabs and the helper list, copy any values from
+  Categories → Monthly Budget into Budgets, then remove that column
+- ONE shared "counts as expense / income" rule, used for spent now and by
+  /report and the Dashboard later
+- Spent calculated live from Transactions for the ENTRY's month (message
+  after save) or the current month (/budget); empty/0 budget = no limit
+- The separate budget message after every successful save (under, exactly
+  at, over; one message for a linked group with several categories; none
+  for no-limit categories, non-expenses or /undo) via ONE reusable
+  "after save" step that every later flow calls
+- /budget and /budget [category], spoiler amounts, warnings for duplicate
+  or unknown categories in the Budgets tab
+- Setting "Budget auto-delete" = Yes/No (default Yes), FIXED 60 seconds,
+  same queue as /saldo. Change the cleanup trigger so it only waits for
+  messages due within ~15s (quota-safe, SPEC Section 13); /saldo keeps its
+  fixed 60s
+Show me your plan and questions first.
+```
+
 ## Phase 3 — Adjust balance and transfers with fees/partial expense
 ```
 Read CLAUDE.md, SPEC.md (Section 6: Adjust Balance, Transfer with Partial
 Expense; Section 14) and PROGRESS.md.
 Phase 3 goal: /adjust, transfer + admin fee, transfer + partial expense,
 "sampai [amount]" difference detection, linked entries with Link ID,
-source-vs-destination question, and /undo for linked groups.
+source-vs-destination question, and /undo for linked groups. Expense
+portions (fees, partial spending) go through the Phase 2B "after save" step
+so the budget message lists every budgeted category in the linked group.
 Show me your plan and questions first.
 ```
 
@@ -88,6 +119,10 @@ Phase 4 goal: piutang, hutang, long-term, group piutang with sub-records,
 split bill (equal/custom), pelunasan (full/partial/overpayment), add to
 existing, convert/close, contacts and aliases (/contact), /open (amounts
 with the spoiler helper from Phase 2), full history linked by Debt ID.
+Decide how Conversion rows count (expense/income) and put it in the shared
+"counts as expense / income" rule from Phase 2B, so budgets, reports and
+the Dashboard agree. My split-bill share and converted piutang trigger the
+budget message through the "after save" step.
 Show me your plan and questions first.
 ```
 
@@ -99,6 +134,9 @@ sheet, fixed vs variable amounts, default fees, scheduled prompts with
 [Yes] [Change amount] [Skip]. Build the single hourly dispatcher trigger
 for all reminders in Section 15 (daily, weekly Monday, monthly 1st,
 merging rules, snooze) and guide me through creating the trigger.
+Favorites saved as expenses go through the Phase 2B "after save" step
+(budget message). Keep it to TWO time triggers in total (this dispatcher +
+the 1-minute cleanup trigger).
 Show me your plan and questions first.
 ```
 
@@ -113,15 +151,37 @@ selling with FIFO default and row picker, realized vs unrealized gain,
 Show me your plan and questions first.
 ```
 
-## Phase 7 — GoPay Split Bill OCR
+## Phase 7 — Bill OCR: GoPay Split Bill + receipts
 ```
-Read CLAUDE.md, SPEC.md (Section 10) and PROGRESS.md.
-Phase 7 goal: receive a photo, download it via getFile, save it to the
-Images folder, send it to Gemini vision with a JSON-only prompt, and turn it
-into the split-bill flow from Phase 4. Identify the sender with their GoPay
-name from the Users table, match names via Contacts, handle low confidence,
-totals that don't add up, unknown names, duplicates, caption overrides,
-and full manual fallback. Send a "processing…" message first.
+Read CLAUDE.md, SPEC.md (Sections 10, 24 and 25 "Budget message after
+saving") and PROGRESS.md.
+Phase 7 goal: read bill images and log them.
+- Accept photos AND image files (documents); use the largest photo size.
+  Send a "processing…" message first
+- ONE Gemini vision call with a JSON-only prompt. Route: issuer matches
+  "GoPay" AND a participant list is found → GoPay Split Bill flow (Section
+  10, using the Phase 4 split-bill logic); everything else → Receipt flow
+  (GoPay payment receipts suggest GoPay as the wallet). Caption "split" /
+  "bill" forces the flow
+- Split bills: identify the sender by GoPay name from the Users table,
+  match names via Contacts, low confidence, totals that don't add up,
+  unknown names, duplicates, full manual fallback
+- Receipts: final total (never Subtotal or Kembalian), candidate totals when
+  unclear, Expense preview with category (keyword → AI → ask) and wallet,
+  receipt duplicate rule (total + merchant + receipt date, any time)
+- Caption parsed like a text message but with the amount OPTIONAL
+- The pending entry keeps only the Telegram file_id (not the image). Only
+  after I tap Yes: save the row(s), download the image again, upload it to
+  the Receipts folder (monthly subfolder, file name rule; create
+  MonetaBot/Receipts if none is set), then put a "View receipt" HYPERLINK in
+  Image Link on every row of the group. Upload failure: keep the
+  transaction, log it, tell me
+- The budget message after saving (Phase 2B "after save" step)
+- /undo of a receipt asks whether to also trash the image
+- Upgrade function: Input Source dropdown → Text / OCR-GoPay / OCR-Receipt
+  / Favorite / Sheet in my existing main sheet and template
+- /setreceipts [folder url], and a guide for sharing the Receipts folder
+  with my partner so "View receipt" opens for them
 Show me your plan and questions first.
 ```
 
@@ -133,8 +193,12 @@ in the Archive folder, clearing and carry-over, blocking entries in closed
 months (no /reopen), Monthly Report tab, /report [month] [year] (chat
 summary amounts with the spoiler helper from Phase 2), automatic
 report after closing, the 18:00 last-day closing reminder, /setsheet with
-validation, /setarchive, /settemplate, /template. Be careful: closing
-deletes data from the main sheet, so archive and verify first.
+validation, /setarchive, /settemplate, /template. On closing, write each
+budgeted category's budget and spent to Budget_History; /report shows
+budget usage (Budget_History for closed months, Budgets tab live for the
+current month), using the shared "counts as expense" rule. Carry the
+Budgets tab over. Be careful: closing deletes data from the main sheet,
+so archive and verify first.
 Show me your plan and questions first.
 ```
 
@@ -159,4 +223,17 @@ Expected: [what should happen]
 Got: [what the bot replied, or nothing]
 Logs tab / error: [paste any error, but no tokens or keys]
 Find the cause, explain it briefly, fix it, push, and tell me how to retest.
+```
+
+---
+
+## Spec update prompt (use if you already started building)
+```
+SPEC.md was updated: new Section 24 (receipt OCR for non-GoPay bills) and
+Section 25 (budgeting), plus related edits in Sections 0, 4, 12, 13, 16,
+17, 18 (Tabs 3, 7, 15, 16), 21 and 22. PHASES.md has a new Phase 2B and
+updated Phases 3, 4, 7 and 8.
+Read the changes, compare them with what is already built (PROGRESS.md),
+and tell me what needs to change in existing code and in which phase each
+change belongs. Do not change code until I approve.
 ```

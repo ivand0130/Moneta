@@ -12,6 +12,23 @@ Phase 1 — DONE (2026-09-25).
   then show the normal preview. Phase 2 uses Gemini for category suggestion
   only. Pick up in Phase 3 or later, before the OCR phase (it shares AI.gs).
 
+## Spec change 2026-09-28: receipts (SPEC 24) + budgeting (SPEC 25)
+Decisions (owner): GoPay flow only if issuer = GoPay AND participant list;
+"Budget auto-delete" = Yes/No with a fixed 60s (like /saldo); cleanup is
+quota-safe (sleeps only for messages due within ~15s); budget message uses
+the entry's month, /budget the current month; budget history goes to a new
+Budget_History tab. Changes needed in code that is ALREADY built:
+- Phase 2B: cleanupMessages currently sleeps up to 60s per due message
+  (Telegram.gs) — reduce to ~15s; Categories "Monthly Budget" column
+  (Phase 1 schema + existing sheet) moves to the new Budgets tab via an
+  upgrade function; add Settings helper "Expense Categories" and the
+  "Budget auto-delete" row; saveTrx_ (Confirm.gs) must call a reusable
+  "after save" step
+- Phase 7: LISTS.INPUT_SOURCES (Config.gs) and the sheet dropdown change to
+  Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet; parser needs a caption
+  mode with an optional amount; routeUpdate_ must accept image documents;
+  receipts need their own duplicate rule (findDuplicate_ is text-only)
+
 ## Done
 - Phase 0 (skeleton, no transaction logic)
   - clasp linked to standalone project (script ID in .clasp.json, rootDir src/)

@@ -71,9 +71,13 @@ Bot replies in English; user input may be English or Bahasa Indonesia.
   and log the failure to the Logs tab.
 - Only chat IDs listed in the Users table in Settings may use the bot.
   Anyone else gets no data.
-- Amounts in /saldo, /inv, /open and /report replies go through ONE spoiler
-  helper (respecting the "Hide amounts" setting). Previews and save
-  confirmations stay plain. Send messages with parse_mode HTML and escape
+- Amounts in /saldo, /inv, /open, /report, /budget and the budget message
+  after saving go through ONE spoiler helper (respecting the "Hide
+  amounts" setting). Previews and save confirmations stay plain.
+- ONE shared rule decides whether a Transactions row counts as expense or
+  income; budgets, reports and the Dashboard all use it.
+- Every flow that saves an expense calls the same "after save" step, which
+  sends the budget message (SPEC Section 25). Send messages with parse_mode HTML and escape
   user text (<, >, &) so notes can't break formatting.
 - All amounts are stored as positive integers in Rupiah; display as Rp with
   "." thousand separators (Rp1.250.000).
@@ -99,4 +103,7 @@ Bot replies in English; user input may be English or Bahasa Indonesia.
 - Batch sheet reads/writes (getValues/setValues), never cell-by-cell loops.
 - Two time triggers only: the hourly reminder dispatcher and the 1-minute
   message-cleanup trigger. The cleanup trigger must exit immediately when
-  its queue is empty, to stay within the daily trigger runtime quota.
+  its queue is empty, to stay within the daily trigger runtime quota
+  (~90 min/day). It may only sleep for messages due within ~15 seconds:
+  budget messages follow every expense, so waiting a full minute for each
+  would use up the quota. Auto-delete delays are fixed at 60 seconds.

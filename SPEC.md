@@ -17,8 +17,17 @@
   so manual edits stay correct; IDs and statuses are set by the script
 - Password message is auto-deleted after reading
 - Sensitive amounts are hidden with Telegram spoiler formatting, and the
-  /saldo reply auto-deletes after a delay set in Settings (see Section 13)
+  /saldo reply auto-deletes after a fixed 60 seconds (see Section 13)
+- The /saldo password is kept in the Settings tab ("Password", numbers
+  only), read fresh each time, so it can be reset in the sheet (Section 13)
 - Monthly report includes a breakdown by user
+- Photos that are not GoPay Split Bills are read as receipts: the total is
+  logged as an Expense and the image is saved to Drive (Section 24). A photo
+  goes to the GoPay Split Bill flow only if the issuer is GoPay AND it has a
+  participant list
+- Budgets are set per category in a Budgets tab; empty/0 = no limit; a
+  separate budget message follows each save, and can auto-delete after a
+  fixed 60 seconds ("Budget auto-delete" = Yes/No) (Section 25)
 - Investment prices are manual only for now
 
 ## 1. Role & Goal
@@ -67,6 +76,8 @@ The bot must support these inputs:
 | Group piutang              | Money lent to several people at once                      | piutang grup 600rb Budi, Andi, Citra            |
 | Split bill                 | I paid for a group including myself                       | split 400rb makan Budi Andi termasuk saya       |
 | GoPay Split Bill (image)   | Send a GoPay Split Bill screenshot to log a split bill    | [GoPay Split Bill image]                        |
+| Receipt (image)            | Photo of any other bill; the total becomes an Expense     | [receipt photo] caption: BCA                    |
+| Budget check               | Show budget, spent and remaining per category             | /budget  or  /budget food                       |
 | Pelunasan (settlement)     | Full or partial payment of hutang/piutang                 | Budi bayar piutang 200rb                        |
 | Add to existing            | Increase an existing open hutang/piutang                  | tambah piutang Budi 100rb                       |
 | Convert / close debt       | Close a hutang/piutang by turning it into income/expense  | tutup piutang PTG-001 jadi pengeluaran          |
@@ -325,6 +336,8 @@ Convert / close hutang/piutang:
 - Anything unclear is confirmed before saving
 
 ## 10. GoPay Split Bill OCR
+(Photos are first routed as described in Section 24; this section applies
+only when the image is a GoPay Split Bill.)
 - I can send a screenshot of a GoPay Split Bill to log a split bill
 - The bot reads the image (AI vision recommended) and extracts:
   - Merchant / bill title and date (if missing → today)
@@ -380,6 +393,7 @@ Convert / close hutang/piutang:
     columns exist; if not, it lists what's missing and offers to create them
   - Shows the sheet name and asks for confirmation before switching
 - /setarchive [folder url]: change the Drive folder used for closing archives
+- /setreceipts [folder url]: change the Drive folder used for bill images
 - /template: send a link to make a copy of the main sheet template
   - /settemplate [url]: change which sheet is used as the template
   - Option to create a fresh copy directly in my Drive and send its link
@@ -391,29 +405,40 @@ Convert / close hutang/piutang:
 - /saldo and /setsheet require a password; default is 0000
 - /changepass to change the password; the bot reminds me to change the
   default on first use
-- Store the password hashed, not in plain text
+- The password is stored in the Settings tab ("Password" row, numbers only,
+  plain text) so it can be reset in the sheet if forgotten (owner's decision;
+  anyone who can open the sheet already sees every balance). It is read
+  fresh from the sheet every time, never cached. Input with spaces or
+  letters is rejected
+- A wrong password asks again (up to 5 tries, then a 15-minute lock), so a
+  retry is never read as a transaction
 - Delete the message containing the password after it's read
   (deleteMessage works in private chats)
 
 ### Hiding sensitive amounts
-- Spoiler formatting: in replies to /saldo, /inv, /open and /report, every
+- Spoiler formatting: in replies to /saldo, /inv, /open, /report, /budget
+  and the budget message after saving, every
   Rp amount, quantity value and gain/loss is wrapped in Telegram spoiler
   formatting (HTML parse mode, <tg-spoiler>), so it stays blurred until
   tapped. Everyday confirmations (e.g. "✅ Saved as TRX-0123") and previews
   keep plain amounts so logging stays fast
 - Spoilers can be turned on/off in Settings ("Hide amounts" = yes/no)
-- Auto-delete: the /saldo reply is deleted automatically after the delay
-  set in Settings ("Saldo auto-delete (seconds)", default 60; 0 = never)
+- Auto-delete: the /saldo reply is deleted automatically after a FIXED 60
+  seconds (owner's decision; there is no delay setting)
   - The bot stores the chat ID, message ID and delete time in a queue
     (CacheService, with a Script Properties backup)
-  - A cleanup trigger runs every minute, deletes expired messages, and exits
-    immediately when the queue is empty to save quota
-  - Deletion may be up to about a minute late; that is acceptable
+  - A cleanup trigger runs every minute and exits immediately when the queue
+    is empty to save quota
+  - Timing vs quota: the trigger only waits (sleeps) for a message that is
+    due within about 15 seconds; anything later is left for the next run.
+    So deletion happens about 60–120 seconds after sending. Waiting longer
+    for every message would use up the ~90 min/day trigger runtime quota,
+    because budget messages follow every expense
   - If deletion fails (e.g. message already deleted), log it and move on
-  - The bot adds a small note under the /saldo reply, e.g.
-    "🕒 This message will be deleted in 60s"
-- Telegram only lets bots delete messages sent in the last 48 hours; the
-  delay setting is capped below that
+  - The bot adds a small note under the reply, e.g.
+    "🕒 This message will be deleted in about 1 min"
+- The same auto-delete queue is used for the budget message after saving and
+  the /budget reply, when "Budget auto-delete" = Yes (Section 25)
 
 ## 14. Confirmation & Error Handling
 The bot must ask me questions instead of guessing when:
@@ -499,7 +524,7 @@ Confirmation rules:
     unrealized and realized gain/loss, month-over-month change
   - Net worth: cash wallets + investment value + piutang − hutang
   - Transaksi Favorit: paid vs skipped this month (only those with dates)
-  - Budget usage per category, if budgets are set
+  - Budget usage per category from the Budgets tab (see Section 25)
   - Breakdown by user (me vs partner)
 - Format: a short chat summary plus a link to the report tab of the newly
   generated archive sheet
@@ -520,7 +545,9 @@ Commands will reread the existing google sheets
 - /wallet: list wallets and their groups; /wallet add to create one
 - /category: list categories; /category add to create one
 - /contact: list contacts and aliases; /contact add to create one
-- /setsheet [url], /setarchive [url], /settemplate [url], /template
+- /budget, /budget [category]: budget, spent and remaining (Section 25)
+- /setsheet [url], /setarchive [url], /setreceipts [url], /settemplate [url],
+  /template
 - /changepass: change the password (default 0000)
 - /undo: remove the last entry or linked group, after confirmation
 
@@ -546,8 +573,8 @@ Tab 1: Transactions (all money movements)
 | Debt ID         | PTG-001            | Hutang/piutang-related entries only                |
 | Inv ID          | INV-0001           | Investment-related entries only                    |
 | Favorite ID     | FAV-003            | If logged from a favorite                          |
-| Input Source    | Text               | Text / OCR / Favorite / Sheet                      |
-| Image Link      | drive.google.com/… | GoPay Split Bill image                             |
+| Input Source    | Text               | Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet  |
+| Image Link      | View receipt       | HYPERLINK to the bill image in the Receipts folder |
 | Month Status    | Open               | Open / Closed                                      |
 
 Tab 2: Hutang_Piutang (one row per record or sub-record)
@@ -572,9 +599,11 @@ Tab 2: Hutang_Piutang (one row per record or sub-record)
 | Last Reminder | 2026-09-20   |                                    |
 | Snoozed Until | 2026-09-21   |                                    |
 
-Tab 3: Categories: name, type (income/expense/investment), monthly budget,
+Tab 3: Categories: name, type (income/expense/investment),
 keywords for auto-detection, default wallet [optional]; include default
-"Admin & Bank Fees" and "Adjustment" categories
+"Admin & Bank Fees" and "Adjustment" categories. (No budget column: budgets
+live in the Budgets tab. The main sheet built in Phase 1 still has a
+"Monthly Budget" column here; Phase 2B moves its values and removes it.)
 
 Tab 4: Wallets: wallet name, wallet group, wallet type (cash / investment
 category), opening balance, current balance, owner (Me / Partner / Shared),
@@ -588,10 +617,15 @@ Tab 6: Monthly Report: one section or row per month, filled by the script,
 including closing status and archive link
 
 Tab 7: Settings: a Users table (chat ID, display name, GoPay name) for me
-and my partner, main sheet ID, archive folder ID, reminder
+and my partner, main sheet ID, archive folder ID, receipts folder ID, reminder
 times, thresholds (large amount, duplicate window, reminder days), timezone,
-AI on/off, Hide amounts (yes/no), Saldo auto-delete (seconds)
-(URLs and password hash stored in script properties)
+AI on/off, Gemini model, Hide amounts (yes/no), Password (numbers only),
+Spending Wallet Groups, Investment Wallet Groups, Budget auto-delete
+(yes/no). Helper lists: Owners, Investment Categories, Expense Categories
+(for the Budgets dropdown), Wallet Groups.
+(Bot token, Gemini key and folder/sheet IDs are stored in Script
+Properties; the ID rows in Settings are info only. The /saldo auto-delete
+delay is fixed at 60 seconds, not a setting.)
 
 Tab 8: (no Pending tab) Pending confirmations are stored in CacheService
 with a 10-minute expiry, keyed by chat ID
@@ -640,6 +674,14 @@ Tab 13: Price_History: date, Inv ID / asset name, price per unit, value,
 source (manual / bulk / sheet edit / auto), month-end flag
 
 Tab 14: Contacts: name, aliases (e.g. GoPay display names), notes
+
+Tab 15: Budgets: category, monthly budget (empty/0 = no limit), notes
+(see Section 25)
+
+Tab 16: Budget_History: month key, category, budget, spent, remaining,
+over/under. Written by the script at closing, one row per budgeted
+category per month (the Monthly Report tab has one row per month, so it
+can't hold per-category values). Past reports read from here.
 
 Sheet rules:
 - Data validation (dropdowns) for Type, Status, Term, Category, Wallet,
@@ -767,7 +809,8 @@ Bot (last day, 18:00): 📅 Ready to close September 2026? [Start closing]
 ## 21. Out of Scope
 - Bank account syncing
 - Interest calculation on loans
-- OCR for receipts other than GoPay Split Bill
+- Reading individual line items into separate transactions (receipt OCR
+  logs the total only)
 - /reopen of closed months
 - Automatic investment price fetching (manual only for now)
 
@@ -785,8 +828,14 @@ Bot (last day, 18:00): 📅 Ready to close September 2026? [Start closing]
    bulk price updates, partial sales, GoPay Split Bill images (clear, blurry,
    unknown names, totals not matching), closing and archiving, /setsheet with
    valid and invalid sheets, /template, passwords, spoiler amounts in
-   /saldo, /inv, /open and /report, /saldo auto-delete (default, custom
-   delay, 0 = never, already deleted manually), and every error case
+   /saldo, /inv, /open, /report and /budget, /saldo auto-delete (fixed 60s,
+   already deleted manually), receipt OCR (clear, blurry, several totals,
+   GoPay payment receipt vs GoPay Split Bill, photo vs file, caption
+   override, caption without amount, cancel = no upload, upload failure,
+   link in Transactions tab, partner opening the link), budgets (no limit,
+   0, under, exactly at, over, several categories in one linked group,
+   back-dated entry in the previous month, /undo, sheet edits, renamed
+   category, /budget, auto-delete Yes and No), and every error case
 7. Suggest improvements or risks I haven't thought of
 
 ## 23. Success Criteria
@@ -799,3 +848,188 @@ Bot (last day, 18:00): 📅 Ready to close September 2026? [Start closing]
 - I never miss a hutang/piutang, recurring payment, price update, or closing
 - I receive an accurate monthly report, including investments and net worth,
   without opening the sheet
+
+## 24. Receipt OCR (bills that are not GoPay Split Bill)
+
+### Routing: which OCR flow to use
+- Every photo I send goes through ONE Gemini vision call that returns JSON:
+  merchant/issuer name, whether the image is a GoPay Split Bill (participant
+  list with shares), date, line items (optional), subtotal, tax, service,
+  discount, total, and a confidence value per field
+- Rule: if the OCR result's name/issuer matches "GoPay" (case-insensitive,
+  e.g. "GoPay", "Gopay Split Bill") AND it contains a split-bill participant
+  list → use the GoPay Split Bill flow (Section 10)
+- Otherwise → use the Receipt flow below. This includes normal GoPay payment
+  receipts with no participant list (GoFood, merchant QR payments); for
+  those, suggest GoPay as the wallet. (Matching on the name alone is not
+  enough: those receipts would fail in the split-bill flow.)
+- The caption can force a flow: "split" → Section 10, "bill" → Receipt flow
+- Images arrive either as a Telegram photo or as a file ("document" with an
+  image type, uncompressed); both are accepted. Use the largest photo size
+- An album (several photos at once) arrives as separate messages; each is
+  handled as its own bill
+
+### Receipt flow
+- Take the FINAL total the customer paid ("Total", "Grand Total", "Total
+  Bayar", "Jumlah"), after tax, service charge, discounts and delivery fees.
+  Never use Subtotal or Change ("Kembalian") as the amount
+- If several totals appear or they don't add up (subtotal + tax + service −
+  discount ≠ total) → show the candidates and ask which one to use
+- Create an Expense preview:
+  - Amount = total bill
+  - Note = merchant name (plus caption text, if any)
+  - Date = receipt date; if missing or unreadable → today
+  - Category = mapping order from Section 5 using the merchant name and
+    items (keyword → AI → ask)
+  - Wallet = from the caption (e.g. "BCA"), else wallet rules from Section 6
+  - Input Source = OCR-Receipt
+- The caption can add or override details (e.g. "BCA #food", "120rb").
+  The caption is parsed like a text message but the amount is OPTIONAL
+  (a text message without an amount is an error; a caption without one is
+  not — the OCR total is used)
+- Highlight low-confidence values: "Total read as Rp185.500 (low
+  confidence). Correct? [Yes] [Edit]"
+- Unreadable image or no total found → ask me to resend or type the amount
+- Duplicate check: same total + merchant + receipt date, at ANY time → ask
+  before saving. (This is a separate rule from the text-entry duplicate
+  check, which looks at type + amount + note within a few minutes: a
+  receipt is often logged hours later and its note is the merchant name.)
+- Blocked-month and large-amount rules from Section 14 still apply
+- OCR failure never blocks logging; fall back to manual input
+
+### Saving the image
+- Every uploaded bill image (receipts AND GoPay Split Bills) is saved to the
+  Receipts folder in Google Drive, set with /setreceipts [folder url] (stored
+  in Script Properties as RECEIPTS_FOLDER_ID, like the archive folder)
+- If no folder is set yet, the bot creates "Receipts" inside the MonetaBot
+  Drive folder and uses that, so the first receipt never fails
+- Inside that folder, create one subfolder per month (e.g. "2026-09")
+- File name: [Trx ID]_[yyyy-mm-dd]_[merchant].jpg (e.g.
+  TRX-0142_2026-09-24_Indomaret.jpg)
+- The image is saved ONLY after I confirm; if I cancel, nothing is uploaded
+- While waiting for Yes, the pending entry keeps only Telegram's file_id
+  (pending entries live in CacheService, max 100 KB, so they can't hold the
+  image; nothing survives "in memory" between messages). On Yes the bot
+  downloads the image again with getFile
+- Order on Yes: write the Transactions row(s) → upload the image (the file
+  name needs the Trx ID) → write the link into Image Link. If the upload
+  fails, the transaction stays saved without a link, the failure is logged
+  to Logs, and the success message says the image couldn't be saved
+- Drive files are private to the owner by default. For my partner to open
+  "View receipt", the Receipts folder must be shared with them (a one-time
+  manual step the phase guide explains)
+- The Transactions tab "Image Link" column shows a clickable link
+  (HYPERLINK formula, text "View receipt"); every row of a linked group
+  (e.g. split bill) gets the same link
+- The success message includes the link: "✅ Saved as TRX-0142 · 🧾 View receipt"
+- Archived months keep the links; images are never deleted by closing
+- /undo of a receipt entry removes the Transactions row(s) but moves the
+  image to the Drive trash only after confirming ("Also delete the receipt
+  image? [Yes] [Keep]")
+- Input Source values change from the Phase 1 list (Text / OCR / Favorite /
+  Sheet) to Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet; the existing
+  main sheet and template get the new dropdown through an upgrade function
+
+### Example
+Me:  [photo of an Indomaret receipt] caption: BCA
+Bot: 🧾 Read from receipt: Indomaret | 24 Sep 2026 | Total Rp185.500
+     Expense Rp185.500 | Groceries (keyword) | BCA → Spending
+     Save? [Yes] [No] [Edit]
+Me:  Yes
+Bot: ✅ Saved as TRX-0142 · 🧾 View receipt
+
+## 25. Budgeting
+
+### Budgets tab (master budget per category)
+- A dedicated Budgets tab is the ONLY place budgets are set
+- Columns: Category, Monthly Budget, Notes
+  - Category dropdown lists Expense categories only. Sheets can't filter a
+    dropdown by type, so it reads a helper list "Expense Categories" in the
+    Settings tab (a formula, like "Investment Categories")
+  - Monthly Budget uses the Rp number format
+- Monthly Budget can be empty or 0 → treated as NO LIMIT: that category
+  behaves exactly as it does today, with no budget message
+- Budgets are monthly and shared by me and my partner (both users' spending
+  counts). There are no per-user budgets and no rollover of unused budget
+- Edits in the sheet take effect immediately; the bot reads the tab at
+  runtime (not cached). The tab is carried over on closing
+- A category listed twice: the first row is used and /budget shows a
+  warning. A Budgets row whose category no longer exists in Categories
+  (e.g. renamed) is ignored and /budget shows a warning
+- Migration of the Phase 1 sheet: the Categories tab has a "Monthly Budget"
+  column. An upgrade function adds the Budgets tab (with dropdown, formats,
+  frozen header) to the main sheet and the template, copies any values
+  already typed in that column, then removes the column from Categories
+
+### How "spent" is calculated
+- Spent = sum of all expense amounts in that category in a given month,
+  calculated live from the Transactions tab (never stored), so /undo and
+  manual sheet edits are always reflected
+- Counts: normal expenses, expense portions of transfers (e.g. admin fees),
+  my share of split bills, piutang converted to expense, favorites logged
+  as expenses, and receipt OCR expenses
+- Does NOT count: income, transfers, investments, adjustments, piutang
+  lent, hutang, or settlements
+- ONE shared rule decides whether a Transactions row "counts as an expense"
+  (and as income). Budgets, /report, the Monthly Report and the Dashboard
+  all use it, so their numbers always agree. How Conversion rows count is
+  decided in Phase 4 and then applies everywhere
+- Remaining = Budget − Spent. % used = Spent ÷ Budget
+
+### Which month
+- The budget message after saving uses the month of the ENTRY's date
+  (e.g. on 1 Oct, "50rb makan kemarin" is dated 30 Sep → September's
+  budget, spent and remaining)
+- /budget always shows the current month (today, Asia/Jakarta)
+
+### Budget message after saving
+- After a transaction is saved successfully, IF it includes an expense in a
+  category with a budget greater than 0, the bot sends a SEPARATE message
+  in the same chat, right after the "✅ Saved" message:
+    📊 Budget · Food · September 2026
+    Budget Rp1.500.000 | Spent Rp1.250.000 (83%) | Remaining Rp250.000
+- When spending exceeds the budget:
+    ⚠️ Food is OVER budget by Rp50.000
+    Budget Rp1.500.000 | Spent Rp1.550.000 (103%)
+- Exactly at the budget: "Remaining Rp0 (100%)", not "over"
+- A linked group touching several budgeted categories (e.g. transfer +
+  admin fee + food) → one message listing each affected category
+- No budget message for no-limit categories or non-expense entries
+- No budget message after /undo; the next save or /budget shows the new
+  numbers
+- The budget message is sent to the chat of the person who logged it
+- Amounts follow the "Hide amounts" spoiler setting (Section 13)
+- One reusable "after save" step sends it, so every flow that saves an
+  expense (text, transfers with fees, split bills, conversions, favorites,
+  receipts) gets it automatically
+
+### /budget command
+- /budget: every category with a budget > 0 showing budget, spent,
+  remaining and % used; over-budget categories flagged with ⚠️; a total
+  row; plus one line for spending in no-limit categories
+- /budget [category]: the same for one category (any case; #tag-style
+  prefix works, e.g. /budget bills)
+- Current month only; past months are in /report
+- No password required (amounts are hidden until tapped, and the reply
+  auto-deletes when "Budget auto-delete" = Yes)
+
+### Disappearing messages
+- Setting: "Budget auto-delete" = Yes / No (default Yes)
+- Yes → the budget message after saving AND the /budget reply are deleted
+  after a FIXED 60 seconds, using the same queue and cleanup trigger as
+  /saldo (Section 13), with the note "🕒 Deleted in about 1 min"
+- No → they stay in the chat
+- Budget messages follow every expense, so they must not make the cleanup
+  trigger wait: only messages due within ~15 seconds are waited for
+  (Section 13); deletion happens about 60–120 seconds after sending
+- The "✅ Saved" message itself is never auto-deleted, so the transaction
+  record stays in the chat
+
+### Reporting
+- The monthly report's "Budget usage per category" section shows budget,
+  spent, remaining, and over/under per category
+- On closing, each budgeted category's budget and spent amount are saved in
+  the Budget_History tab (Section 18, Tab 16: one row per category per
+  month), so later budget changes don't alter past reports. /report for a
+  closed month reads Budget_History; for the current month it reads the
+  Budgets tab live

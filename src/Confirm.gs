@@ -145,22 +145,8 @@ function startTransaction_(message) {
     extra: parsed.extra || null,   // transfer fee / received amount / partial expense (SPEC Section 6)
     readByAi: !!parsed.readByAi
   });
-  if (p.d.type !== 'Transfer' && !p.d.category) aiCategory_(p, ctx);
   p.orig = p.d.category; // to spot a correction later (→ offer to save a keyword)
   advanceTrx_(p, ctx);
-}
-
-/** Step 3 of category mapping: ask Gemini. Failures just leave it empty. */
-function aiCategory_(p, ctx) {
-  if (!p.d.note || !getSettingYes_(SETTING.AI_ENABLED)) return;
-  sendTyping_(p.chatId);
-  const names = ctx.categories.filter(function (c) { return c.type === p.d.type; })
-    .map(function (c) { return c.name; });
-  const pick = aiSuggestCategory_(p.d.note, p.d.type, names);
-  if (pick) {
-    p.d.category = pick;
-    p.d.categoryHow = 'ai';
-  }
 }
 
 /** Asks for whatever is still missing, in order, then shows the preview. */
@@ -197,11 +183,7 @@ function advanceTrx_(p, ctx) {
       if (x.kind === 'partial' && !x.from) x.from = 'dest'; // owner's rule: spent from the destination after arriving
       if (!ctx.categories.some(function (c) { return c.name === x.category && c.type === 'Expense'; })) {
         x.category = null;
-        if (!x.aiTried) {
-          x.aiTried = true;
-          aiExtraCategory_(p, ctx);
-        }
-        if (!x.category) return askCategory_(p, ctx, 'extra');
+        return askCategory_(p, ctx, 'extra');
       }
     }
   } else {
@@ -300,19 +282,6 @@ function askReceived_(p) {
     '<b>' + formatRp_(diff) + '</b> difference. What was it?',
     [[btn_(p, '💸 A fee', 'rx', 'fee'), btn_(p, '🛒 Spent on something', 'rx', 'spent')],
      [btn_(p, '✏️ Typo: the transfer was ' + formatRp_(received), 'rx', 'typo')], cancelRow_(p)]);
-}
-
-/** Gemini guess for the extra part's category (partial expenses with a note). */
-function aiExtraCategory_(p, ctx) {
-  const x = p.d.extra;
-  if (x.kind !== 'partial' || !x.note || !getSettingYes_(SETTING.AI_ENABLED)) return;
-  sendTyping_(p.chatId);
-  const names = ctx.categories.filter(function (c) { return c.type === 'Expense'; }).map(function (c) { return c.name; });
-  const pick = aiSuggestCategory_(x.note, 'Expense', names);
-  if (pick) {
-    x.category = pick;
-    x.categoryHow = 'ai';
-  }
 }
 
 /** "tgl 10" was read as the nearest past 10th: confirm it or pick another date. */
@@ -583,7 +552,7 @@ function changeType_(p, type, ctx) {
     d.category = null;
     d.categoryHow = '';
     const k = matchKeyword_(d.note, ctx.categories, [type]);
-    if (k) { d.category = k.category; d.categoryHow = 'keyword'; } else aiCategory_(p, ctx);
+    if (k) { d.category = k.category; d.categoryHow = 'keyword'; }
     p.orig = d.category;
   }
 }

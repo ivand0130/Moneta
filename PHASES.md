@@ -169,7 +169,7 @@ Phase 7 goal: read bill images and log them.
   match names via Contacts, low confidence, totals that don't add up,
   unknown names, duplicates, full manual fallback
 - Receipts: final total (never Subtotal or Kembalian), candidate totals when
-  unclear, Expense preview with category (keyword → AI → ask) and wallet,
+  unclear, Expense preview with category (keyword → ask) and wallet,
   receipt duplicate rule (total + merchant + receipt date, any time)
 - Caption parsed like a text message but with the amount OPTIONAL
 - The pending entry keeps only the Telegram file_id (not the image). Only

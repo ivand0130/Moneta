@@ -40,7 +40,7 @@ Bot replies in English; user input may be English or Bahasa Indonesia.
   getFile (for images)
 - Parser.gs: amount parsing (50rb, 1.5jt, 2juta, 50.000, 50k), dates
   (kemarin, 20/09), wallet/category/name extraction, intent detection
-- AI.gs: Gemini calls (parse, category suggestion, OCR) with timeout,
+- AI.gs: Gemini calls (message parsing, OCR — never category choice) with retries,
   JSON-only prompts, and graceful fallback
 - Sheets.gs: open main sheet by ID, read/write helpers, header lookup by
   NAME (never by fixed column number), ID generators

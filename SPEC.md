@@ -1,8 +1,9 @@
 # Product Requirement Prompt: Personal Money Tracker Bot
 
 ## 0. Final Decisions (already agreed; do not re-ask)
-- AI: Gemini API free tier (Flash) for parsing, category suggestion and
-  GoPay OCR; keyword/manual fallback always available
+- AI: Gemini API free tier (Flash) ONLY for parsing — reading messages the
+  rules can't, and (later) bill photos. AI never picks categories (owner's
+  decision in Phase 3). Rules/manual fallback always available
 - Users: me and my partner each chat with the bot PRIVATELY; both private
   chats read and write the SAME Google Sheet. "Logged By" comes from the
   sender's chat ID via the Users table in Settings
@@ -106,9 +107,10 @@ The bot must support these inputs:
 - Mapping order:
   1. Category explicitly written by the user (e.g. "#food")
   2. Keyword match from the Categories tab (e.g. "KFC" → Food)
-  3. AI suggestion based on the note (e.g. "beli obat di Kimia Farma" → Health)
-  4. If still unclear → ask me to pick from a category list (inline buttons)
-- AI-mapped and keyword-mapped categories are shown in the preview so I can
+  3. If still unclear → ask me to pick from a category list (inline buttons)
+  (No AI step: AI is only used for parsing — owner's decision in Phase 3.
+  Saving a keyword after picking makes step 2 catch more over time.)
+- Keyword-mapped categories are shown in the preview so I can
   confirm or change them before saving
 - When I correct a category, offer to save the keyword so the same note is
   mapped automatically next time
@@ -394,7 +396,7 @@ only when the image is a GoPay Split Bill.)
   - If someone else paid: my share = Hutang to that person
     (ask: if I already paid them back, record it as an Expense instead)
   - All entries share one Link ID
-  - Category for my share is mapped from the merchant/title (keyword, then AI)
+  - Category for my share is mapped from the merchant/title (keyword, then buttons)
   - Wallet is asked if not mentioned in the caption
 - Name matching:
   - GoPay names are matched to existing counterparty names using the
@@ -750,7 +752,7 @@ Sheet rules:
 
 ## 19. User Flow Examples
 Me:  50rb makan siang di KFC
-Bot: Preview: Expense Rp50.000 | Food (AI) | GoPay → Spending (mapped)
+Bot: Preview: Expense Rp50.000 | Food (keyword) | GoPay → Spending (mapped)
      | 24 Sep 2026 | "makan siang di KFC"
      Save? [Yes] [No] [Edit]
 Me:  Yes
@@ -834,7 +836,7 @@ Bot: Sell 5 lot BBCA (FIFO from INV-0003) × 10.200 = Rp5.100.000
      Fee? [None] [Enter fee]
 
 Me:  /fav add Bayar Token Listrik 100k setiap tanggal 1 September 2026
-Bot: Preview favorite: Bayar Token Listrik | Rp100.000 | Utilities (AI)
+Bot: Preview favorite: Bayar Token Listrik | Rp100.000 | Utilities (keyword)
      | monthly on the 1st, starting 1 Sep 2026 | wallet? [BCA] [GoPay]
 
 Bot (scheduled favorite): 📌 Bayar Token Listrik is due today.
@@ -939,7 +941,7 @@ Bot (last day, 18:00): 📅 Ready to close September 2026? [Start closing]
   - Note = merchant name (plus caption text, if any)
   - Date = receipt date; if missing or unreadable → today
   - Category = mapping order from Section 5 using the merchant name and
-    items (keyword → AI → ask)
+    items (keyword → ask)
   - Wallet = from the caption (e.g. "BCA"), else wallet rules from Section 6
   - Input Source = OCR-Receipt
 - The caption can add or override details (e.g. "BCA #food", "120rb").

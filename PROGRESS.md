@@ -3,10 +3,10 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 3 — code pushed (2026-09-28), waiting on upgradeSheets + deploy +
-Telegram test.
+Phase 3 — DONE (2026-09-28). Telegram checklist passed. (The last change —
+removing AI category guessing — was pushed at closing; deploy a new version.)
 Phase 2B — DONE (2026-09-28). Phase 2 — DONE (2026-09-28).
-Next after 3: Phase 4 — Hutang / piutang and split bill (text).
+Next: Phase 4 — Hutang / piutang and split bill (text).
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)
@@ -129,7 +129,8 @@ Still to change in code that is already built:
     pick. Investment wallets (Wallet Type = Investment, or group listed in
     "Investment Wallet Groups") are blocked for expense/income; transfers may
     use investment-group cash wallets (BCA → IPOT) but not Type=Investment
-  - Category mapping: #tag → longest keyword → Gemini (AI.gs, JSON only,
+  - Category mapping (changed in Phase 3 to #tag → keyword → buttons, NO AI).
+    Phase 2 version: #tag → longest keyword → Gemini (AI.gs, JSON only,
     model from Settings, failures logged) → buttons; after the user picks a
     category, offer to save a word from the note as a keyword (moved from
     any other category)
@@ -170,6 +171,39 @@ Still to change in code that is already built:
     upgradeMissingTabs_, testBudget + testBudgetCommand
   - Rule for all later phases: every flow that saves an expense calls
     afterSave_(ss, chatId, [{ type, category, date }])
+- Phase 3 (adjust balance, transfers with fee / received amount / partial expense, AI parsing)
+  - Parser: one extra part per transfer (extractTransferExtra_): fee words
+    before/after an amount ("admin 2.5rb", "dipotong admin 15k", "biaya
+    transfer 6.5rb", "2.5rb admin"), received ("sampai / diterima R"), partial
+    ("Y untuk / buat / dipakai …", the rest is its note, #tag = its category).
+    Needs a main amount too; two extras → asks to split. parseAdjust_ for
+    /adjust (0 and negative balances, optional date + note)
+  - Rules (owner): EVERY fee comes out of the amount (Transfer = amount − fee,
+    fee from the source; the From deduction is what was typed). Partial
+    spending is spent FROM THE DESTINATION after arriving (no question; Edit
+    can switch). "sampai R": [A fee] [Spent on something] [Typo]
+  - entriesOf_(d) → the rows to save (Transfer + Expense), walletDeltas_ →
+    per-wallet effect shown in the preview and used for negative checks
+  - Linked rows share a Link ID (nextId_ on "Link ID", LNK-0001); saved in one
+    lock; the expense part goes through afterSave_ (budget message)
+  - Source wallet's Default Transfer Fee is suggested on plain transfers
+    (preview "default fee for BCA", [🚫 No fee]); Edit: fee/spent amount and
+    category, remove, ➕ Add fee, switch source/destination
+  - /undo on a linked group deletes all of it ("Delete all N")
+  - /adjust: "Password for /adjust" (default Yes), spoiler amounts, recorded
+    vs actual vs adjustment, re-checked on Yes, Adjustment row (Type and
+    Category Adjustment, Direction In/Out, never income/expense). "Adjust
+    auto-delete" (default Yes): the bot message AND the /adjust command are
+    deleted 60s after the flow ends, or at pending expiry (10 min).
+    scheduleDelete_ replaces an existing entry for the same message
+  - AI (owner: ONLY for parsing): aiParseTransaction_ + validateAiTransaction_
+    when the rules find no clear amount and looksLikeMoney_; every field is
+    checked against real wallets, category comes from keywords/buttons, the
+    preview says "🤖 Read by AI". AI category guessing was REMOVED
+    (aiSuggestCategory_ gone). Gemini retries 503/500/network errors (3 tries,
+    1s + 2s); the reply notes when the AI step failed; testGemini lists the
+    models the key can use
+  - Tests: testParser 102, testAdjust 15, testLinkedEntries 12, testAiParse 12
 
 ## Known issues
 - Conversion (debt → income/expense) rows: how they count in totals and

@@ -2,7 +2,7 @@
  * Categories.gs — categories and keywords read from the Categories tab,
  * category matching (#tag, keyword), saving new keywords, /category.
  *
- * Mapping order (SPEC Section 5): #tag → keyword → Gemini (AI.gs) → buttons.
+ * Mapping order (SPEC Section 5): #tag → keyword → buttons (AI is only used to read messages).
  */
 
 // Words never offered as keywords ("save 'di' as a keyword?" makes no sense).

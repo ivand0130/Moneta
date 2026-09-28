@@ -535,7 +535,7 @@ function testAiParse() {
   const t = function (name, actual, expected) { if (checkCase_(name, actual || { ok: null }, expected)) pass++; };
   t('good answer', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: 20000, wallet: 'gopay',
     date: '2026-09-24', note: 'kopi', category: 'Food' }, ctx, now),
-    { ok: true, type: 'Expense', amount: 20000, wallet: 'GoPay', date: '2026-9-24', category: 'Food', categoryHow: 'ai', readByAi: true });
+    { ok: true, type: 'Expense', amount: 20000, wallet: 'GoPay', date: '2026-9-24', category: 'Food', categoryHow: 'keyword', readByAi: true });
   t('not a transaction', validateAiTransaction_({ is_transaction: false }, ctx, now), { ok: null });
   t('bad type', validateAiTransaction_({ is_transaction: true, type: 'Loan', amount: 5 }, ctx, now), { ok: null });
   t('no amount', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: 0 }, ctx, now), { ok: null });

@@ -75,32 +75,6 @@ function logAiFailure_(source, message, details) {
   }
 }
 
-/**
- * Asks Gemini to pick one category from the list for this note.
- * Returns a category name from the list, or null.
- */
-function aiSuggestCategory_(note, type, categoryNames) {
-  if (!note || categoryNames.length === 0) return null;
-  const prompt = [
-    'You categorize personal finance transactions for a household in Indonesia.',
-    'The note may be in Bahasa Indonesia, English, or both.',
-    'Transaction type: ' + type,
-    'Note: ' + JSON.stringify(note),
-    'Choose exactly one category from this list: ' + JSON.stringify(categoryNames),
-    'If none fits reasonably, use an empty string.',
-    'Reply with JSON only, like {"category": "Food", "confidence": 0.9}'
-  ].join('\n');
-  const answer = callGeminiJson_(prompt, 'category');
-  if (answer === null || typeof answer.category !== 'string' || answer.category === '') return null;
-  if (typeof answer.confidence === 'number' && answer.confidence < 0.5) return null;
-  const match = categoryNames.filter(function (n) { return n.toLowerCase() === answer.category.toLowerCase(); })[0];
-  if (!match) {
-    logAiFailure_('category', 'answer not in category list', answer.category);
-    return null;
-  }
-  return match;
-}
-
 // ---------------------------------------------------------------------------
 // AI parsing fallback (deferred item from Phase 2, built in Phase 3)
 // ---------------------------------------------------------------------------
@@ -123,22 +97,16 @@ function looksLikeMoney_(text) {
  */
 function aiParseTransaction_(text, ctx, now) {
   const wallets = ctx.wallets.filter(function (w) { return w.active && w.type === 'Cash'; }).map(function (w) { return w.name; });
-  const cats = function (type) {
-    return ctx.categories.filter(function (c) { return c.type === type; }).map(function (c) { return c.name; });
-  };
   const prompt = [
     'You read personal finance messages from a household in Indonesia (Bahasa Indonesia, English, or both).',
     'Today is ' + Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd') + ' (Asia/Jakarta).',
     'Message: ' + JSON.stringify(text),
     'Wallets: ' + JSON.stringify(wallets),
-    'Expense categories: ' + JSON.stringify(cats('Expense')),
-    'Income categories: ' + JSON.stringify(cats('Income')),
     'Amounts are Indonesian Rupiah: "dua puluh ribu" = 20000, "goceng" = 5000, "ceban" = 10000, "1,5 juta" = 1500000.',
     'If the message is not ONE money transaction (a greeting, a question, several transactions), set is_transaction to false.',
     'Reply with JSON only:',
     '{"is_transaction": true, "type": "Expense|Income|Transfer", "amount": 20000, "wallet": "exact wallet name or empty",',
-    ' "to_wallet": "exact wallet name or empty (transfers only)", "date": "YYYY-MM-DD or empty", "note": "short note",',
-    ' "category": "exact category name or empty"}'
+    ' "to_wallet": "exact wallet name or empty (transfers only)", "date": "YYYY-MM-DD or empty", "note": "short note"}'
   ].join('\n');
   const answer = callGeminiJson_(prompt, 'parse');
   if (answer === null) return { ok: false, failed: true }; // the call itself failed (logged)
@@ -175,15 +143,10 @@ function validateAiTransaction_(a, ctx, now) {
   }
 
   const note = String(a.note || '').trim().slice(0, 200);
+  // AI only reads the message; the category comes from the keywords (or buttons), as for typed messages.
   let category = null;
   let categoryHow = '';
-  if (type !== 'Transfer' && a.category) {
-    const c = ctx.categories.filter(function (x) {
-      return x.type === type && x.name.toLowerCase() === String(a.category).toLowerCase();
-    })[0];
-    if (c) { category = c.name; categoryHow = 'ai'; }
-  }
-  if (type !== 'Transfer' && !category) {
+  if (type !== 'Transfer') {
     const k = matchKeyword_(note, ctx.categories, [type]);
     if (k) { category = k.category; categoryHow = 'keyword'; }
   }

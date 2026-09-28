@@ -89,7 +89,7 @@ const SETTING = {
  */
 const SETTING_ROWS = [
   ['Timezone', 'Asia/Jakarta', 'Info only. The bot always uses Asia/Jakarta.'],
-  [SETTING.AI_ENABLED, 'Yes', 'Yes = use Gemini for category suggestions (and OCR later). No = keywords and buttons only.'],
+  [SETTING.AI_ENABLED, 'Yes', 'Yes = Gemini reads messages the rules cannot (e.g. "kopi dua puluh ribu") and, later, bill photos. It never picks categories. No = rules only.'],
   [SETTING.GEMINI_MODEL, 'gemini-flash-latest', 'Gemini model name. Change it here if Google renames models.'],
   [SETTING.LARGE_AMOUNT, '5000000', 'Amounts above this (Rp) get a warning in the preview.'],
   [SETTING.DUPLICATE_MINUTES, '5', 'Warn if the same type + amount + note was logged within this many minutes.'],

@@ -28,11 +28,21 @@ Already done (2026-09-28, in Phase 2 code):
   when negative) + upgradeSheets() to add them to the existing main sheet
   and template (writes formulas in en_US, then restores the locale; also
   runs upgradeSettings and validateSheet)
-- "Password for /saldo" switch (Settings, default Yes, read fresh)
+- "Password for /saldo" switch (Settings, default Yes, read fresh); the
+  password prompt says where to turn it off
+- "✅ Saved as TRX-…" no longer shows wallet balances (owner's decision)
+- Budget message after saving (pulled forward from 2B at the owner's
+  request): afterSave_(ss, chatId, entries) in Confirm.gs — one message for
+  all budgeted expense categories in the entries, month of each entry's
+  date, spoiler amounts; "Budget auto-delete" (Yes/No, default Yes) deletes
+  it at 23:59 via the delete queue. countsAsExpense_ (Transactions.gs) is
+  the shared rule; parseBudget_/spentInMonth_/buildBudgetText_ in
+  Categories.gs; testBudget in Tests.gs
+- upgradeSettings removes OBSOLETE_SETTINGS rows (e.g. "Saldo auto-delete
+  (seconds)"), moving only the Setting/Value/Notes cells
 Still to change in code that is already built:
-- Phase 2B: saveTrx_ (Confirm.gs) must call a reusable "after save" step;
-  add "Password for /budget" and "Budget auto-delete" rows; add
-  Budget_History to the schema; end-of-day delete time for budget messages
+- Phase 2B: /budget and /budget [category], "Password for /budget",
+  Budget_History in the schema; every new saving flow must call afterSave_
 - Phase 7: LISTS.INPUT_SOURCES (Config.gs) and the sheet dropdown change to
   Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet; parser needs a caption
   mode with an optional amount; routeUpdate_ must accept image documents;

@@ -34,6 +34,16 @@ function writeTransaction_(ss, d, loggedBy) {
   return id;
 }
 
+/**
+ * THE rule for "does this Transactions row count as an expense?" — used by
+ * budgets now and by /report and the Dashboard later, so numbers agree.
+ * Today: Type = Expense. (Conversion rows are decided in Phase 4 — change
+ * it here, and in the Categories "Spent" formula in Template.gs.)
+ */
+function countsAsExpense_(row) {
+  return String(row['type']).trim() === 'Expense';
+}
+
 /** All Transactions rows (objects with lowercase keys and _row). */
 function loadTransactions_(ss) {
   return readTableByHeaders_(ss.getSheetByName(TAB.TRANSACTIONS), 'Amount');

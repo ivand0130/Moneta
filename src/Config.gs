@@ -72,6 +72,7 @@ const SETTING = {
   HIDE_AMOUNTS: 'Hide amounts',
   PASSWORD: 'Password',
   SALDO_PASSWORD: 'Password for /saldo',
+  BUDGET_AUTO_DELETE: 'Budget auto-delete',
   SPENDING_GROUPS: 'Spending Wallet Groups',
   INVESTMENT_GROUPS: 'Investment Wallet Groups'
 };
@@ -90,6 +91,7 @@ const SETTING_ROWS = [
   [SETTING.HIDE_AMOUNTS, 'Yes', 'Yes = amounts in /saldo, /inv, /open, /report are hidden until tapped.'],
   [SETTING.PASSWORD, '0000', 'Password for /saldo. Numbers only. Change it here or with /changepass. 0000 = default (the bot reminds you to change it).'],
   [SETTING.SALDO_PASSWORD, 'Yes', 'Yes = /saldo asks for the password. No = /saldo shows balances right away (still hidden until tapped, and deleted after 60s).'],
+  [SETTING.BUDGET_AUTO_DELETE, 'Yes', 'Yes = the budget message sent after each save is deleted at the end of the day (23:59). No = it stays.'],
   [SETTING.SPENDING_GROUPS, 'Spending', 'Wallet groups offered as buttons for expenses (comma-separated).'],
   [SETTING.INVESTMENT_GROUPS, 'Investment', 'Wallet groups that hold investment money: not usable for expenses/income, hidden in /saldo (shown in /saldo all). Transfers are fine.'],
   ['Daily Reminder Time', '08:00', 'Hour for the daily hutang/piutang reminder (HH:MM).'],
@@ -104,6 +106,9 @@ const SETTING_ROWS = [
 
 /** The /saldo reply is deleted this many seconds after it's sent (fixed by the owner's choice). */
 const SALDO_DELETE_SECONDS = 60;
+
+/** Settings rows from earlier versions that are no longer used; upgradeSettings() removes them. */
+const OBSOLETE_SETTINGS = ['Saldo auto-delete (seconds)', 'Budget auto-delete (seconds)'];
 
 /** How many recent webhook outcomes to keep for showRecentUpdates(). */
 const RECENT_UPDATES_MAX = 10;

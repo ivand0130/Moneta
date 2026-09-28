@@ -712,7 +712,13 @@ Bot: Preview: Expense Rp50.000 | Food (AI) | GoPay → Spending (mapped)
      | 24 Sep 2026 | "makan siang di KFC"
      Save? [Yes] [No] [Edit]
 Me:  Yes
-Bot: ✅ Saved as TRX-0123. GoPay balance: Rp450.000
+Bot: ✅ Saved as TRX-0123.
+Bot: 📊 Budget · Food · September 2026
+     Budget Rp1.500.000 | Spent Rp1.250.000 (83%) | Remaining Rp250.000
+     (separate message, only if Food has a budget; deleted at the end of the
+     day when "Budget auto-delete" = Yes)
+(The "✅ Saved" message never shows wallet balances — owner's decision;
+balances are only in /saldo.)
 
 Me:  transfer 1jt BCA ke GoPay admin 2.5rb
 Bot: Preview (LNK-0005):

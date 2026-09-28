@@ -76,9 +76,12 @@ Show me your plan and questions first.
 Read CLAUDE.md, SPEC.md (Section 25, Section 13 "Hiding sensitive amounts",
 Section 18 Tabs 3, 7, 15) and PROGRESS.md.
 Phase 2B goal: budgets per category with a message after every save.
-(Already built before this phase: the Categories tab's Monthly Budget,
-Spent and Remaining columns, upgradeSheets(), and the "Password for
-/saldo" switch — check PROGRESS.md.)
+(Already built before this phase, see PROGRESS.md: the Categories tab's
+Monthly Budget, Spent and Remaining columns, upgradeSheets(), the
+"Password for /saldo" switch, countsAsExpense_, the budget message after
+saving via afterSave_ with "Budget auto-delete" (end of day). Remaining for
+2B: /budget and /budget [category], "Password for /budget", Budget_History
+in the schema, and calling afterSave_ from every new flow.)
 - Load Monthly Budget per Expense category (empty/0 = no limit; ignore
   budgets on non-Expense categories)
 - ONE shared "counts as expense / income" rule, used for spent now and by

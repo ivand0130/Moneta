@@ -631,11 +631,39 @@ function upgradeSettings() {
         return { 'Setting': s[0], 'Value': s[1], 'Notes': s[2] };
       }));
     }
-    console.log(ss.getName() + ': ' + (missing.length > 0
-      ? 'added ' + missing.map(function (s) { return s[0]; }).join(', ')
-      : 'already up to date'));
+    const removed = removeObsoleteSettings_(sheet);
+    const done = [];
+    if (missing.length > 0) done.push('added ' + missing.map(function (s) { return s[0]; }).join(', '));
+    if (removed.length > 0) done.push('removed unused ' + removed.join(', '));
+    console.log(ss.getName() + ': ' + (done.length ? done.join('; ') : 'settings already up to date'));
   });
   clearConfigCache();
+}
+
+/**
+ * Removes rows listed in OBSOLETE_SETTINGS from the Setting/Value/Notes
+ * table. Only those three columns move up; the Users table and helper lists
+ * that share the same rows are not touched. Returns the removed names.
+ */
+function removeObsoleteSettings_(sheet) {
+  const map = getHeaderMap_(sheet);
+  const cols = ['setting', 'value', 'notes'].map(function (h) { return map[h]; });
+  const last = lastDataRow_(sheet, 'Setting');
+  if (last < 2 || cols.some(function (c) { return c === undefined; })) return [];
+  const obsolete = OBSOLETE_SETTINGS.map(function (s) { return s.toLowerCase(); });
+  const values = sheet.getRange(2, 1, last - 1, sheet.getLastColumn()).getValues();
+  const keep = values.filter(function (row) {
+    return obsolete.indexOf(String(row[cols[0]]).trim().toLowerCase()) === -1;
+  });
+  const removed = values.filter(function (row) { return keep.indexOf(row) === -1; })
+    .map(function (row) { return String(row[cols[0]]).trim(); });
+  if (removed.length === 0) return [];
+  cols.forEach(function (c, i) {
+    const column = keep.map(function (row) { return [row[c]]; });
+    while (column.length < values.length) column.push(['']);
+    sheet.getRange(2, c + 1, column.length, 1).setValues(column);
+  });
+  return removed;
 }
 
 /** Puts the chat IDs from ALLOWED_CHAT_IDS into the main sheet's Users table. */

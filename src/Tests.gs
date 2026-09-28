@@ -353,3 +353,35 @@ function testDeleteQueue() {
   console.log((hasTrigger ? 'PASS' : 'FAIL') + ': cleanupMessages trigger is installed' +
     (hasTrigger ? '' : ' (run installCleanupTrigger)'));
 }
+
+/** Budget rules: parsing, what counts as spent, the message text (no sheet needed). */
+function testBudget() {
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  t('budget number', parseBudget_(1500000), 1500000);
+  t('budget text with dots', parseBudget_('1.500.000'), 1500000);
+  t('budget empty = no limit', parseBudget_(''), 0);
+  const rows = [
+    { type: 'Expense', category: 'Food', amount: 50000, date: new Date(2026, 8, 3) },
+    { type: 'Expense', category: 'Food', amount: 25000, date: new Date(2026, 8, 20) },
+    { type: 'Expense', category: 'Food', amount: 99000, date: new Date(2026, 7, 31) },   // August
+    { type: 'Income', category: 'Food', amount: 70000, date: new Date(2026, 8, 5) },     // not an expense
+    { type: 'Transfer', category: '', amount: 1000000, date: new Date(2026, 8, 5) },
+    { type: 'Expense', category: 'Health', amount: 30000, date: new Date(2026, 8, 5) }
+  ];
+  t('spent: only this month, only expenses, only this category', spentInMonth_(rows, 'Food', 2026, 8), 75000);
+  t('spent: previous month', spentInMonth_(rows, 'Food', 2026, 7), 99000);
+  const under = buildBudgetText_([{ category: 'Food', year: 2026, month: 8, budget: 100000, spent: 75000 }], false);
+  t('under budget shows remaining', /Remaining Rp25\.000/.test(under) && /75%/.test(under), true);
+  const exact = buildBudgetText_([{ category: 'Food', year: 2026, month: 8, budget: 100000, spent: 100000 }], false);
+  t('exactly at budget is not over', /OVER/.test(exact) === false && /Remaining Rp0/.test(exact), true);
+  const over = buildBudgetText_([{ category: 'Food', year: 2026, month: 8, budget: 100000, spent: 150000 }], false);
+  t('over budget says OVER by the difference', /OVER budget by <\/b>Rp50\.000/.test(over) && /150%/.test(over), true);
+  const hidden = buildBudgetText_([{ category: 'Food', year: 2026, month: 8, budget: 100000, spent: 75000 }], true);
+  t('amounts hidden when Hide amounts = Yes', (hidden.match(/<tg-spoiler>/g) || []).length, 3);
+  t('two categories in one message', buildBudgetText_([
+    { category: 'Food', year: 2026, month: 8, budget: 100000, spent: 1 },
+    { category: 'Health', year: 2026, month: 8, budget: 100000, spent: 1 }]).split('📊').length - 1, 2);
+  t('no items → no message', buildBudgetText_([]), '');
+  console.log((pass === 11 ? 'PASS' : 'FAIL') + ': testBudget ' + pass + '/11');
+}

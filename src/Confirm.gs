@@ -445,18 +445,64 @@ function saveTrx_(p, ctx, user) {
   });
   if (id === null) return;
 
-  SpreadsheetApp.flush();
-  const wallets = loadWallets_(ctx.ss);
-  const bal = function (name) {
-    const w = findWallet_(wallets, name);
-    return escapeHtml_(name) + (d.type === 'Transfer' ? ': ' : ' balance: ') + (w ? formatRp_(w.balance) : '?');
-  };
-  editMessage(p.chatId, p.msgId, '✅ Saved as <b>' + id + '</b>. ' +
-    (d.type === 'Transfer' ? bal(d.wallet) + ', ' + bal(d.toWallet) : bal(d.wallet)));
+  editMessage(p.chatId, p.msgId, '✅ Saved as <b>' + id + '</b>.');
+  afterSave_(ctx.ss, p.chatId, [{ type: d.type, category: d.category, date: d.date }]);
 
   if (d.type !== 'Transfer' && d.categoryHow === 'chosen' && d.category !== p.orig) {
     offerKeyword_(p.chatId, d.category, d.note);
   }
+}
+
+// ---------------------------------------------------------------------------
+// After save (every flow that saves entries calls this)
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs after entries are saved: sends the budget message (SPEC Section 25)
+ * for every expense category in `entries` that has a budget > 0, using the
+ * month of each entry's date. entries = [{ type, category, date(ms) }].
+ * Never throws — a problem here must not look like a failed save.
+ */
+function afterSave_(ss, chatId, entries) {
+  try {
+    const expenses = entries.filter(function (e) { return countsAsExpense_(e) && e.category; });
+    if (expenses.length === 0) return;
+    const budgeted = {};
+    loadCategories_(ss).forEach(function (c) {
+      if (c.type === 'Expense' && c.budget > 0) budgeted[c.name] = c.budget;
+    });
+    const wanted = [];
+    expenses.forEach(function (e) {
+      const date = new Date(e.date);
+      const key = e.category + '|' + date.getFullYear() + '|' + date.getMonth();
+      if (budgeted[e.category] && wanted.indexOf(key) === -1) wanted.push(key);
+    });
+    if (wanted.length === 0) return;
+
+    SpreadsheetApp.flush();
+    const rows = loadTransactions_(ss);
+    const items = wanted.map(function (key) {
+      const parts = key.split('|');
+      const year = Number(parts[1]);
+      const month = Number(parts[2]);
+      return { category: parts[0], year: year, month: month, budget: budgeted[parts[0]],
+        spent: spentInMonth_(rows, parts[0], year, month) };
+    });
+
+    const autoDelete = getSettingYes_(SETTING.BUDGET_AUTO_DELETE);
+    const text = buildBudgetText_(items) + (autoDelete ? '\n\n🕒 <i>Deleted at the end of the day.</i>' : '');
+    const sent = sendMessage(chatId, text);
+    if (autoDelete) scheduleDelete_(chatId, sent.message_id, secondsUntilEndOfDay_());
+  } catch (err) {
+    logError_('afterSave_', err);
+  }
+}
+
+/** Seconds until 23:59 today (Asia/Jakarta); 60 if it's already later than that. */
+function secondsUntilEndOfDay_() {
+  const now = new Date();
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 0);
+  return Math.max(60, Math.round((end.getTime() - now.getTime()) / 1000));
 }
 
 // ---------------------------------------------------------------------------

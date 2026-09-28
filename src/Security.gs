@@ -105,7 +105,8 @@ function startSaldo_(chatId, filter) {
     showSaldo_(chatId, filter, false);
     return;
   }
-  askPassword_(chatId, 'saldo', { filter: filter }, '🔒 Enter the password to see balances.');
+  askPassword_(chatId, 'saldo', { filter: filter }, '🔒 Enter the password to see balances.\n' +
+    '<i>You can turn this off in Settings → Password for /saldo.</i>');
 }
 
 /** /changepass */

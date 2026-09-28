@@ -20,6 +20,7 @@ function loadCategories_(ss) {
         .map(function (k) { return k.trim(); })
         .filter(String),
       defaultWallet: String(r['default wallet'] || '').trim(),
+      budget: parseBudget_(r['monthly budget']),
       row: r._row
     };
   });
@@ -130,4 +131,45 @@ function buildCategoryListText_(categories) {
   lines.push('', 'Use one in a message with #, e.g. <code>30rb obat #health</code>.',
     'Add one: <code>/category add Pets</code>. Keywords are edited in the Categories tab.');
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Budgets (SPEC Section 25): Monthly Budget per category in the Categories
+// tab; empty or 0 = no limit; only Expense categories use it.
+// ---------------------------------------------------------------------------
+
+/** A Monthly Budget cell → whole Rupiah (number or text like "1.500.000"), 0 if empty. */
+function parseBudget_(value) {
+  if (typeof value === 'number') return Math.max(0, Math.round(value));
+  const digits = String(value || '').replace(/[^\d]/g, '');
+  return digits === '' ? 0 : Number(digits);
+}
+
+/** Sum of amounts that count as expense for a category in one month (month is 0-based). */
+function spentInMonth_(rows, category, year, month) {
+  return rows.reduce(function (sum, r) {
+    const d = r['date'];
+    if (!(d instanceof Date) || d.getFullYear() !== year || d.getMonth() !== month) return sum;
+    if (!countsAsExpense_(r) || String(r['category']).trim() !== category) return sum;
+    return sum + (Number(r['amount']) || 0);
+  }, 0);
+}
+
+/**
+ * The budget message for these { category, year, month, budget, spent }
+ * items, or '' if there are none. Amounts go through the spoiler helper.
+ */
+function buildBudgetText_(items, hide) {
+  if (items.length === 0) return '';
+  return items.map(function (it) {
+    const month = Utilities.formatDate(new Date(it.year, it.month, 1), Session.getScriptTimeZone(), 'MMMM yyyy');
+    const pct = Math.round(it.spent / it.budget * 100);
+    const over = it.spent - it.budget;
+    const head = over > 0
+      ? '⚠️ <b>' + escapeHtml_(it.category) + ' is OVER budget by </b>' + money_(over, hide) + ' <i>(' + month + ')</i>'
+      : '📊 <b>Budget · ' + escapeHtml_(it.category) + ' · ' + month + '</b>';
+    const line = 'Budget ' + money_(it.budget, hide) + ' | Spent ' + money_(it.spent, hide) + ' (' + pct + '%)' +
+      (over > 0 ? '' : ' | Remaining ' + money_(it.budget - it.spent, hide));
+    return head + '\n' + line;
+  }).join('\n\n');
 }

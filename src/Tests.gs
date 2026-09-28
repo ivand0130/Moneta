@@ -354,6 +354,29 @@ function testDeleteQueue() {
     (hasTrigger ? '' : ' (run installCleanupTrigger)'));
 }
 
+/**
+ * Shows every setting exactly as the bot reads it right now (fresh from the
+ * main sheet), and how it understands the on/off switches. The password
+ * value is never shown.
+ */
+function showSettings() {
+  const tab = loadSettingsTab_(true);
+  if (tab === null) {
+    console.log('FAIL: no main sheet (MAIN_SHEET_ID is not set).');
+    return;
+  }
+  console.log('Main sheet: ' + openMainSheet_().getName());
+  Object.keys(tab.settings).forEach(function (k) {
+    const v = k === SETTING.PASSWORD.toLowerCase() ? '(hidden)' : JSON.stringify(tab.settings[k]);
+    console.log('  ' + k + ' = ' + v);
+  });
+  [SETTING.BUDGET_AUTO_DELETE, SETTING.SALDO_PASSWORD, SETTING.HIDE_AMOUNTS, SETTING.AI_ENABLED].forEach(function (name) {
+    const present = tab.settings[name.toLowerCase()] !== undefined;
+    console.log('→ ' + name + ': the bot reads ' + (getSettingYes_(name) ? 'YES' : 'NO') +
+      (present ? '' : ' (row missing, using the default)'));
+  });
+}
+
 /** Budget rules: parsing, what counts as spent, the message text (no sheet needed). */
 function testBudget() {
   let pass = 0;

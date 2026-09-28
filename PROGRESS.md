@@ -3,10 +3,10 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 2B — code pushed (2026-09-28), waiting on upgradeSheets + deploy +
-Telegram test.
+Phase 2B — DONE (2026-09-28). All editor tests and the Telegram checklist
+passed.
 Phase 2 — DONE (2026-09-28).
-Next after 2B: Phase 3 — Adjust balance and transfers with fees/partial
+Next: Phase 3 — Adjust balance and transfers with fees/partial
 expense.
 
 ## Deferred (agreed, must be picked up later — do not drop)
@@ -44,7 +44,7 @@ Already done (2026-09-28, part of Phase 2):
 - upgradeSettings removes OBSOLETE_SETTINGS rows (e.g. "Saldo auto-delete
   (seconds)"), moving only the Setting/Value/Notes cells
 Still to change in code that is already built:
-- Phase 2B (pushed, being tested): /budget and /budget [category]
+- Phase 2B (DONE 2026-09-28): /budget and /budget [category]
   (buildBudgetReport_ in Categories.gs, pure; total covers budgeted
   categories only, plus a "Spending without a budget" line; warnings for
   budgets on non-Expense categories and duplicate names), "Password for
@@ -166,6 +166,14 @@ Still to change in code that is already built:
   - Tests: testParser (87 cases), testCategoryMapping, testSpoiler,
     testPassword, testDeleteQueue, testBudget, testSheet; showSettings and
     showRecentUpdates helpers
+- Phase 2B (budgeting)
+  - Budget message after saving (afterSave_, built during Phase 2), /budget
+    and /budget [category], "Password for /budget" (default No), /budget
+    reply deleted after 60s and after-save messages at 23:59 when "Budget
+    auto-delete" = Yes, Budget_History tab (filled in Phase 8),
+    upgradeMissingTabs_, testBudget + testBudgetCommand
+  - Rule for all later phases: every flow that saves an expense calls
+    afterSave_(ss, chatId, [{ type, category, date }])
 
 ## Known issues
 - Conversion (debt → income/expense) rows: how they count in totals and

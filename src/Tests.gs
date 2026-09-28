@@ -634,7 +634,16 @@ function testDebtParser() {
     ['tutup piutang PTG-011 jadi pengeluaran', { kind: 'convert', debtType: 'Piutang', id: 'PTG-011' }],
     ['tutup hutang Andi', { kind: 'convert', debtType: 'Hutang', name: 'Andi' }],
     ['bayar PTG-010-A 100rb', { kind: 'pay', id: 'PTG-010-A', debtType: 'Piutang' }],
-    ['piutang Budi', { ok: false, error: 'debt_no_amount' }],
+    ['piutang Budi', { ok: true, kind: 'new', name: 'Budi', amount: null, needsAmount: true }],
+    // Owner's rules (Phase 4 feedback): several names = group; "piutang split" = group; commas and a
+    // full stop separate people and the note in any case; a missing amount is asked, not an error
+    ['piutang 600rb Budi, Andi, Citra', { ok: true, kind: 'new', group: true, total: 600000 }],
+    ['piutang split 500k melvern, kia', { ok: true, kind: 'new', group: true, total: 500000 }],
+    ['piutang split kia, melvern', { ok: true, kind: 'new', group: true, needsTotal: true }],
+    ['split 500k, budi, andi, aku', { ok: true, kind: 'split', total: 500000, me: 166668, category: null }],
+    ['split makan. budi 100k, andi 100k, aku 200k', { ok: true, kind: 'split', note: 'makan', category: 'Food',
+      total: 400000, me: 200000 }],
+    ['split 300rb bakso, Budi, Andi', { kind: 'split', note: 'bakso', total: 300000, me: 100000 }],
     ['split 400rb makan', { ok: false, error: 'split_no_people' }],
     ['piutang grup 600rb Budi', { ok: false, error: 'group_few_people' }],
     ['split 500rb Budi 150rb Andi 120rb saya 130rb', { ok: false, error: 'shares_mismatch' }],
@@ -650,9 +659,14 @@ function testDebtParser() {
   t('split equal: friends round down, I take the leftover', people(parseDebt_('split 400rb makan Budi Andi termasuk saya', ctx)),
     'Budi 133333, Andi 133333');
   // Not debts → the normal transaction parser handles them
+  t('comma names: piutang split 500k melvern, kia', people(parseDebt_('piutang split 500k melvern, kia', ctx)),
+    'melvern 250000, kia 250000');
+  t('comma names: split makan. budi 100k, andi 100k, aku 200k',
+    people(parseDebt_('split makan. budi 100k, andi 100k, aku 200k', ctx)), 'Budi 100000, Andi 100000'); // known contacts keep their saved names
+  t('several names = group', people(parseDebt_('piutang 600rb Budi, Andi, Citra', ctx)), 'Budi 200000, Andi 200000, Citra 200000');
   t('"bayar listrik 200rb" is not a debt', parseDebt_('bayar listrik 200rb', ctx), null);
   t('"50rb makan" is not a debt', parseDebt_('50rb makan', ctx), null);
-  const total = cases.length + 5;
+  const total = cases.length + 8;
   console.log((pass === total ? 'PASS' : 'FAIL') + ': testDebtParser ' + pass + '/' + total);
 }
 

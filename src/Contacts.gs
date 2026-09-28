@@ -8,7 +8,10 @@
  */
 
 function loadContacts_(ss) {
-  return readTableByHeaders_(ss.getSheetByName(TAB.CONTACTS), 'Name').map(function (r) {
+  // Every message reads contacts, so a missing Contacts tab must not break normal logging.
+  const sheet = ss.getSheetByName(TAB.CONTACTS);
+  if (sheet === null) return [];
+  return readTableByHeaders_(sheet, 'Name').map(function (r) {
     return {
       name: String(r['name']).trim(),
       aliases: String(r['aliases'] || '').split(',').map(function (a) { return a.trim(); }).filter(String),

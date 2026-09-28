@@ -779,7 +779,8 @@ function parseDebt_(text, ctx) {
   }
   if (kind === 'split') debtType = 'Piutang';
 
-  const group = has(GROUP_WORDS);
+  // "piutang grup …" or "piutang split …" = a group piutang (several names also make a group, below).
+  let group = has(GROUP_WORDS) || (kind === 'new' && has(SPLIT_WORDS));
   const full = has(FULL_WORDS);
   let term = 'Short';
   tokens.forEach(function (t, i) {
@@ -830,52 +831,102 @@ function parseDebt_(text, ctx) {
   let noteAt = tokens.findIndex(function (t) { return !t.used && isIn(t, NOTE_START_WORDS); });
   if (noteAt === -1) noteAt = tokens.length;
   const wordy = function (t) { return /[a-zÀ-ɏ]/i.test(t.clean) && !/\d/.test(t.clean); };
-
-  // Unknown names: leftover words before the note. In a split, only Capitalized words count
-  // as names (lowercase leftovers like "makan" are the note).
-  const unknown = [];
+  const cleanName = function (raw) { return raw.replace(/^[("'“]+/, '').replace(/[,;.:!?)"'”]+$/, ''); };
   const noteWords = [];
-  tokens.forEach(function (t, i) {
-    if (t.used) return;
-    if (i >= noteAt) { if (!isIn(t, NOTE_START_WORDS) || i > noteAt) noteWords.push(t.raw); return; }
-    if (!wordy(t)) { noteWords.push(t.raw); return; }
-    const capital = /^[A-Z]/.test(t.raw.replace(/^[("'“]+/, ''));
-    if (kind === 'split' && !capital) { noteWords.push(t.raw); return; }
-    unknown.push({ name: t.raw.replace(/[,;.:!?]+$/, ''), index: i });
-  });
-
-  // For one-person commands, neighbouring unknown words form one name ("Budi Santoso").
-  let names;
-  if (kind === 'split' || group) {
-    names = contacts.map(function (c) { return { name: c.name, index: c.index, known: true }; })
-      .concat(unknown.map(function (u) { return { name: u.name, index: u.index, known: false }; }));
-  } else if (contacts.length) {
-    names = [{ name: contacts[0].name, index: contacts[0].index, known: true }];
-    unknown.forEach(function (u) { noteWords.push(u.name); });
-  } else if (unknown.length) {
-    const run = [unknown[0]];
-    for (let k = 1; k < unknown.length && run.length < 3; k++) {
-      if (unknown[k].index === run[run.length - 1].index + 1) run.push(unknown[k]); else break;
-    }
-    names = [{ name: run.map(function (u) { return u.name; }).join(' '), index: run[0].index, known: false }];
-    unknown.slice(run.length).forEach(function (u) { noteWords.push(u.name); });
-  } else {
-    names = [];
-  }
-  names.sort(function (a, b) { return a.index - b.index; });
-
-  // Pair amounts with the name (or "saya") right before them; the rest is the total.
-  const slots = names.map(function (n) { return { name: n.name, known: n.known, index: n.index, amount: null }; });
-  meTokens.forEach(function (i) { slots.push({ isMe: true, index: i, amount: null }); });
-  slots.sort(function (a, b) { return a.index - b.index; });
+  const slots = [];     // { name, known, index, amount } or { isMe, index, amount }
   const totals = [];
-  amounts.forEach(function (a) {
-    const at = a.tokens[0];
-    const owner = slots.filter(function (s) { return s.index < at; }).pop();
-    const nextSlot = slots.filter(function (s) { return s.index > (owner ? owner.index : -1) && s.index < at; })[0];
-    if (owner && owner.amount === null && !nextSlot && (kind === 'split' || group)) owner.amount = a;
-    else totals.push(a);
+
+  // --- Comma / full-stop mode: "split makan. budi 100k, andi 100k, aku 200k",
+  //     "piutang 600rb Budi, Andi, Citra", "split 500k, budi, andi, aku".
+  // A full stop ends the header (category / note words); commas separate people, in any case.
+  const periodAt = tokens.findIndex(function (t, i) {
+    return i < tokens.length - 1 && /[a-zÀ-ɏ]\.$/i.test(t.raw) && !/\d/.test(t.raw);
   });
+  const commaMode = periodAt !== -1 || tokens.some(function (t, i) { return i < tokens.length - 1 && /,$/.test(t.raw); });
+  if (commaMode && (kind === 'split' || kind === 'new')) {
+    const segOf = [];
+    let seg = 0;
+    tokens.forEach(function (t, i) {
+      segOf[i] = periodAt !== -1 && i <= periodAt ? 'H' : seg;
+      if (!(periodAt !== -1 && i <= periodAt) && /,$/.test(t.raw)) seg++;
+    });
+    const segs = [];
+    segOf.forEach(function (s) { if (segs.indexOf(s) === -1) segs.push(s); });
+    segs.forEach(function (s) {
+      const idx = segOf.map(function (x, i) { return x === s ? i : -1; }).filter(function (i) { return i !== -1; });
+      const inSeg = function (i) { return idx.indexOf(i) !== -1; };
+      const contact = contacts.filter(function (c) { return inSeg(c.index); })[0];
+      const me = meTokens.filter(inSeg)[0];
+      const words = idx.filter(function (i) { return !tokens[i].used && wordy(tokens[i]) && i < noteAt; });
+      const segAmounts = amounts.filter(function (a) { return inSeg(a.tokens[0]); });
+      // The header, or (in a split without a full stop) a first part with no known name, is not a person.
+      const isHeader = s === 'H' || (s === 0 && periodAt === -1 && kind === 'split' && !contact);
+      if (isHeader || (!contact && me === undefined && words.length === 0)) {
+        words.forEach(function (i) { noteWords.push(tokens[i].raw); });
+        segAmounts.forEach(function (a) { totals.push(a); });
+        return;
+      }
+      const slot = me !== undefined && !contact && words.length === 0
+        ? { isMe: true, index: me, amount: null }
+        : { name: contact ? contact.name : words.map(function (i) { return cleanName(tokens[i].raw); }).join(' '),
+            known: !!contact, index: contact ? contact.index : words[0], amount: null };
+      if (contact) words.forEach(function (i) { noteWords.push(tokens[i].raw); });
+      // An amount after the name is that person's share; one before it is the total ("piutang 600rb Budi, …").
+      segAmounts.forEach(function (a) {
+        if (a.tokens[0] > slot.index && slot.amount === null) slot.amount = a; else totals.push(a);
+      });
+      slots.push(slot);
+    });
+    tokens.forEach(function (t, i) {
+      if (!t.used && i >= noteAt && (!isIn(t, NOTE_START_WORDS) || i > noteAt)) noteWords.push(t.raw);
+    });
+  } else {
+    // --- Plain mode. In a split, only Capitalized words are names (lowercase leftovers like
+    //     "makan" are the note); otherwise leftovers before the note are the name.
+    const unknown = [];
+    tokens.forEach(function (t, i) {
+      if (t.used) return;
+      if (i >= noteAt) { if (!isIn(t, NOTE_START_WORDS) || i > noteAt) noteWords.push(t.raw); return; }
+      if (!wordy(t)) { noteWords.push(t.raw); return; }
+      const capital = /^[A-Z]/.test(t.raw.replace(/^[("'“]+/, ''));
+      if (kind === 'split' && !capital) { noteWords.push(t.raw); return; }
+      unknown.push({ name: cleanName(t.raw), index: i });
+    });
+    let names;
+    if (kind === 'split' || group) {
+      names = contacts.map(function (c) { return { name: c.name, index: c.index, known: true }; })
+        .concat(unknown.map(function (u) { return { name: u.name, index: u.index, known: false }; }));
+    } else if (contacts.length) {
+      names = contacts.map(function (c) { return { name: c.name, index: c.index, known: true }; });
+      unknown.forEach(function (u) { noteWords.push(u.name); });
+    } else if (unknown.length) {
+      // For one person, neighbouring unknown words form one name ("Budi Santoso").
+      const run = [unknown[0]];
+      for (let k = 1; k < unknown.length && run.length < 3; k++) {
+        if (unknown[k].index === run[run.length - 1].index + 1) run.push(unknown[k]); else break;
+      }
+      names = [{ name: run.map(function (u) { return u.name; }).join(' '), index: run[0].index, known: false }];
+      unknown.slice(run.length).forEach(function (u) { noteWords.push(u.name); });
+    } else {
+      names = [];
+    }
+    names.forEach(function (n) { slots.push({ name: n.name, known: n.known, index: n.index, amount: null }); });
+    meTokens.forEach(function (i) { slots.push({ isMe: true, index: i, amount: null }); });
+    slots.sort(function (a, b) { return a.index - b.index; });
+    // Pair amounts with the name (or "saya") right before them; the rest is the total.
+    amounts.forEach(function (a) {
+      const at = a.tokens[0];
+      const owner = slots.filter(function (s) { return s.index < at; }).pop();
+      const nextSlot = slots.filter(function (s) { return s.index > (owner ? owner.index : -1) && s.index < at; })[0];
+      if (owner && owner.amount === null && !nextSlot && (kind === 'split' || group)) owner.amount = a;
+      else totals.push(a);
+    });
+  }
+  slots.sort(function (a, b) { return a.index - b.index; });
+  const people = slots.filter(function (s) { return !s.isMe; });
+  // Several people in a piutang/hutang = a group ("piutang 600rb Budi, Andi, Citra").
+  if (kind === 'new' && people.length >= 2) group = true;
+
   if (totals.length > 1) return { ok: false, error: 'multiple_amounts', amounts: totals.map(function (a) { return a.text; }) };
   const totalAmt = totals[0] || null;
   const unclear = function (a) { return a && a.ambiguous; };
@@ -888,17 +939,11 @@ function parseDebt_(text, ctx) {
   };
 
   if (kind === 'split' || (kind === 'new' && group)) {
-    const people = slots.filter(function (s) { return !s.isMe; });
     if (people.length === 0) return { ok: false, error: kind === 'split' ? 'split_no_people' : 'debt_no_name' };
     if (kind === 'new' && people.length < 2) return { ok: false, error: 'group_few_people' };
     if (unclear(totalAmt) || slots.some(function (s) { return unclear(s.amount); })) return { ok: false, error: 'debt_amount_unclear' };
     const meSlot = slots.filter(function (s) { return s.isMe; })[0];
     const includeMe = kind === 'split' && !notMe;
-    const shares = computeShares_(
-      people.map(function (s) { return { name: s.name, amount: s.amount ? s.amount.value : null }; }),
-      totalAmt ? totalAmt.value : 0,
-      includeMe ? { amount: meSlot && meSlot.amount ? meSlot.amount.value : null } : null);
-    if (shares.error) return { ok: false, error: shares.error, sum: shares.sum, total: shares.total };
     let category = null;
     let categoryHow = '';
     if (kind === 'split') {
@@ -909,17 +954,20 @@ function parseDebt_(text, ctx) {
         if (k) { category = k.category; categoryHow = 'keyword'; }
       }
     }
-    return Object.assign(base, {
-      group: kind === 'new', total: shares.total, me: shares.me, includeMe: includeMe, category: category,
-      categoryHow: categoryHow,
-      people: shares.people.map(function (p) {
-        const s = people.filter(function (x) { return x.name === p.name; })[0];
-        return { name: p.name, known: s.known, amount: p.amount };
-      })
-    });
+    // The shares; if the total is still missing, the bot asks for it and splits then.
+    const raw = {
+      people: people.map(function (s) { return { name: s.name, known: s.known, amount: s.amount ? s.amount.value : null }; }),
+      me: includeMe ? { amount: meSlot && meSlot.amount ? meSlot.amount.value : null } : null
+    };
+    const result = Object.assign(base, { group: kind === 'new', includeMe: includeMe, category: category,
+      categoryHow: categoryHow, rawShares: raw });
+    const shares = computeShares_(raw.people, totalAmt ? totalAmt.value : 0, raw.me);
+    if (shares.error === 'debt_no_amount') return Object.assign(result, { needsTotal: true, people: raw.people, total: 0, me: 0 });
+    if (shares.error) return { ok: false, error: shares.error, sum: shares.sum, total: shares.total };
+    return Object.assign(result, sharesToDraft_(shares, raw));
   }
 
-  const person = names[0] || null;
+  const person = people[0] || null;
   const single = Object.assign(base, {
     name: person ? person.name : null, known: person ? person.known : false,
     amount: totalAmt && !totalAmt.ambiguous ? totalAmt.value : null,
@@ -930,11 +978,18 @@ function parseDebt_(text, ctx) {
     const c = tag !== null ? findCategoryByTag_(tag, ctx.categories, ['Expense', 'Income']) : null;
     single.category = c ? c.name : null;
   }
-  if (kind === 'new' && !totalAmt) return { ok: false, error: 'debt_no_amount' };
-  if (kind === 'add' && !totalAmt) return { ok: false, error: 'debt_no_amount' };
-  if (kind === 'pay' && !totalAmt && !full) return { ok: false, error: 'debt_no_amount' };
+  // A missing amount is asked for (the entry is kept), not an error.
+  single.needsAmount = (kind === 'new' || kind === 'add' || (kind === 'pay' && !full)) && !totalAmt;
   if ((kind === 'pay' || kind === 'add' || kind === 'convert') && !single.id && !single.name) {
     return { ok: false, error: 'debt_no_name' };
   }
   return single;
+}
+
+/** computeShares_ result → the draft's people / me / total (keeping "new contact" flags). */
+function sharesToDraft_(shares, raw) {
+  return {
+    total: shares.total, me: shares.me, needsTotal: false,
+    people: shares.people.map(function (p, i) { return { name: p.name, known: raw.people[i].known, amount: p.amount }; })
+  };
 }

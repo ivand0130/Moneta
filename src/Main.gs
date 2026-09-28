@@ -170,7 +170,13 @@ function handleText_(message) {
         startAdjust_(chatId, args, message.message_id);
         return;
       case '/open':
-        startOpen_(chatId);
+        startOpen_(chatId, '', args);
+        return;
+      case '/piutang':
+        startOpen_(chatId, 'Piutang', args);
+        return;
+      case '/hutang':
+        startOpen_(chatId, 'Hutang', args);
         return;
       case '/contact':
       case '/contacts':
@@ -242,8 +248,9 @@ function buildHelpText_() {
     '🤝 <b>Hutang / piutang</b>',
     '• <code>piutang 500rb Budi</code> (you lend) · <code>pinjam 1jt dari Andi</code> (you borrow)',
     '• <code>… jatuh tempo 30/10</code> · <code>piutang jangka panjang 10jt Budi</code>',
-    '• <code>piutang grup 600rb Budi, Andi, Citra</code> · <code>split 400rb makan Budi Andi termasuk saya</code>',
-    '• <code>Budi bayar 200rb</code> · <code>bayar hutang Andi 500rb</code> · <code>Budi lunas</code>',
+    '• <code>piutang 600rb Budi, Andi, Citra</code> (group) · <code>split makan. budi 100k, andi 100k, aku 200k</code>',
+    '• <code>split 400rb makan Budi Andi termasuk saya</code> (commas or capital letters mark names)',
+    '• <code>Budi bayar 200rb</code> (nearest due date first) · <code>bayar hutang Andi 500rb</code> · <code>Budi lunas</code>',
     '• <code>tambah piutang Budi 100rb</code> · <code>tutup piutang PTG-001</code> (turn it into an expense)',
     '',
     'Amounts: 50000 · 50.000 · 50k · 50rb · 1.5jt · 2juta',
@@ -256,7 +263,7 @@ function buildHelpText_() {
     '   One wallet, group or owner: <code>/saldo bca</code>, <code>/saldo spending</code>, <code>/saldo me</code>',
     '/budget — budgets this month (spent, remaining) · <code>/budget food</code>',
     '/undo — delete your last entry',
-    '/open — open hutang / piutang',
+    '/open — open hutang / piutang · <code>/piutang</code> · <code>/hutang</code> · <code>/piutang budi</code>',
     '/contact — contacts and aliases · <code>/contact add Budi, Budi Santoso</code>',
     '/wallet — list wallets · <code>/wallet add Jenius</code>',
     '/category or /cat — list categories · <code>/cat add Pets</code>',

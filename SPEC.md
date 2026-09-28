@@ -297,6 +297,26 @@ Decisions made in Phase 4 (owner):
   "No open … for X. Create a new one, or check the spelling?"
 - Group parents are not picked by name; payments/additions go to a person's
   sub-record. Converting a group converts every open sub-record
+- Group triggers: "piutang grup …", "piutang split …" or simply several names
+  ("piutang 600rb Budi, Andi, Citra") = a group piutang to those people.
+  "split …" at the START of the message = a split bill that includes me
+- Names are separated by COMMAS (any case). A FULL STOP ends the header:
+  "split makan. budi 100k, andi 100k, aku 200k" → note/category from
+  "makan", people budi 100k, andi 100k, me 200k. Without commas, a split's
+  names must be Capitalized ("split 400rb makan Budi Andi termasuk saya").
+  In a comma split without a full stop, words in the first part are the note
+  ("split 300rb bakso, Budi, Andi"). No category found → the bot asks
+- A missing amount or total is ASKED for; the entry is kept while waiting
+  ("piutang split kia, melvern" → "How much in total?" → "1jt")
+- Payment to someone with several open records needs no question: it is
+  applied to the record with the NEAREST DUE DATE first, then records without
+  a due date from the OLDEST. One payment can settle several records (the
+  preview shows the split; the rows share a Link ID). The same order is used
+  for hutang. "Budi lunas" pays everything Budi owes. A payment by ID goes
+  only to that record (a group ID: spread over its people)
+- Closing by name with several open records offers the list plus [All N]
+- /piutang and /hutang list one type; add a name for one person
+  ("/piutang budi", aliases work). Same switches as /open
 - /open: "Password for /open" (default No) and "Open auto-delete" (default
   Yes, 60 seconds), spoiler amounts, groups listed with their people
 - /undo: undoing a new debt also removes its record(s) (blocked while later

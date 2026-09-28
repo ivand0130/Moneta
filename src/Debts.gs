@@ -15,7 +15,9 @@
 const DEBT_PREFIX = { Piutang: 'PTG', Hutang: 'HTG' };
 
 function loadDebts_(ss) {
-  return readTableByHeaders_(ss.getSheetByName(TAB.DEBTS), 'Debt ID').map(function (r) {
+  const sheet = ss.getSheetByName(TAB.DEBTS);
+  if (sheet === null) return []; // a sheet without the tab still works for everything else
+  return readTableByHeaders_(sheet, 'Debt ID').map(function (r) {
     const n = function (k) { return Number(r[k]) || 0; };
     return {
       id: String(r['debt id']).trim(), parent: String(r['parent id'] || '').trim(),
@@ -88,6 +90,16 @@ function stepDebt_(p, ctx) {
       [[btn_(p, '📅 Use today', 'today'), btn_(p, '❌ Cancel', 'n')]]);
   }
 
+  // A missing amount is asked for; the entry is kept while waiting (owner's rule).
+  if (d.needsTotal) {
+    p.awaitText = 'total';
+    return showStep_(p, debtSummary_(p) + '\nHow much in total? It will be split between ' + d.people.length +
+      (d.includeMe ? ' people and you' : ' people') + '. E.g. <code>500rb</code>.', [cancelRow_(p)]);
+  }
+  if (d.needsAmount) {
+    p.awaitText = 'amount';
+    return showStep_(p, debtSummary_(p) + '\nHow much? E.g. <code>500rb</code>.', [cancelRow_(p)]);
+  }
   if (d.kind === 'pay' || d.kind === 'add' || d.kind === 'convert') {
     const target = resolveDebtTarget_(p, ctx);
     if (target !== true) return target; // a question was shown
@@ -113,12 +125,13 @@ function stepDebt_(p, ctx) {
       '. Which category?');
   }
   if (d.kind === 'pay') {
-    const rec = findDebtById_(ctx.debts, d.recordId);
-    if (d.full) { d.amount = rec.remaining; d.full = false; }
-    if (d.amount > rec.remaining && !d.overpay) return askOverpay_(p, rec);
+    const recs = d.recordIds.map(function (id) { return findDebtById_(ctx.debts, id); });
+    const owed = recs.reduce(function (s, r) { return s + r.remaining; }, 0);
+    if (d.full) { d.amount = owed; d.full = false; } // "Budi lunas" pays everything Budi owes
+    if (d.amount > owed && !d.overpay) return askOverpay_(p, recs, owed);
     if ((d.overpay === 'income' || d.overpay === 'expense') && !d.extraCategory) {
       return askDebtCategory_(p, ctx, d.overpay === 'income' ? 'Income' : 'Expense',
-        'Which category is the extra ' + formatRp_(d.amount - rec.remaining) + '?', 'xc');
+        'Which category is the extra ' + formatRp_(d.amount - owed) + '?', 'xc');
     }
   }
   if (d.kind !== 'convert' && !findWallet_(everydayWallets_(ctx.wallets, ctx.investmentGroups), d.wallet)) {
@@ -132,22 +145,24 @@ function findDebtById_(debts, id) {
 }
 
 /**
- * pay / add / convert: find the record. Returns true when d.recordId is set,
- * otherwise shows a question (pick one, which person of a group, or "no open
- * record") and returns that.
+ * pay / add / convert: find the record(s). Sets d.recordIds (d.recordId = the
+ * first) and returns true, or shows a question and returns that.
+ *   pay     several open records → no question: the payment is spread over
+ *           them, nearest due date first, then the oldest without a due date
+ *   add     several → pick one
+ *   convert several → pick one, or [All]
  */
 function resolveDebtTarget_(p, ctx) {
   const d = p.d;
   const debts = ctx.debts;
-  if (d.recordId) {
-    const rec = findDebtById_(debts, d.recordId);
-    if (rec && isOpenDebt_(rec)) {
-      d.recordType = rec.type;
-      const kids = childrenOf_(debts, rec.id).filter(isOpenDebt_);
-      if (kids.length && d.kind !== 'convert') return pickDebt_(p, kids, 'Which person of ' + rec.id + '?');
+  if (d.recordIds && d.recordIds.length) {
+    const recs = d.recordIds.map(function (id) { return findDebtById_(debts, id); });
+    if (recs.every(function (r) { return r && isOpenDebt_(r); })) {
+      d.recordId = recs[0].id;
+      d.recordType = recs[0].type;
       return true;
     }
-    d.recordId = null;
+    d.recordIds = null; // something was paid/closed meanwhile: look again
   }
   let pool = debts.filter(function (x) { return isOpenDebt_(x) && (!d.debtType || x.type === d.debtType); });
   if (d.id) {
@@ -158,7 +173,10 @@ function resolveDebtTarget_(p, ctx) {
         ' and can\'t be changed.' + (d.kind === 'add' ? ' To lend/borrow again, create a new one, e.g. <code>piutang 100rb ' +
         escapeHtml_(exact.name) + '</code>.' : ''));
     }
-    pool = [exact];
+    const kids = childrenOf_(debts, exact.id).filter(isOpenDebt_);
+    if (kids.length && d.kind === 'add') return pickDebt_(p, kids, 'Which person of ' + exact.id + '?');
+    // A group ID: a payment is spread over its people; a conversion converts all of them.
+    pool = kids.length && d.kind === 'pay' ? kids : [exact];
   } else {
     const name = String(d.name || '').toLowerCase();
     const contact = findContact_(ctx.contacts || [], d.name);
@@ -170,13 +188,13 @@ function resolveDebtTarget_(p, ctx) {
       return names.indexOf(x.name.toLowerCase()) !== -1 && childrenOf_(debts, x.id).length === 0;
     });
   }
-  if (pool.length === 1) {
-    d.recordId = pool[0].id;
+  if (pool.length === 1 || (pool.length > 1 && d.kind === 'pay')) {
+    d.recordIds = sortForPayment_(pool).map(function (x) { return x.id; });
     return resolveDebtTarget_(p, ctx);
   }
   if (pool.length > 1) {
     const typeWord = d.debtType ? d.debtType.toLowerCase() : 'records';
-    return pickDebt_(p, pool, escapeHtml_(d.name || '') + ' has ' + pool.length + ' open ' + typeWord + ':');
+    return pickDebt_(p, pool, escapeHtml_(d.name || '') + ' has ' + pool.length + ' open ' + typeWord + ':', d.kind === 'convert');
   }
   // Nothing open for that name (SPEC Section 14).
   const typeLabel = d.debtType ? d.debtType.toLowerCase() : 'hutang/piutang';
@@ -189,22 +207,52 @@ function resolveDebtTarget_(p, ctx) {
     (rows.length > 1 ? 'Create a new one, or check the spelling?' : 'Check the spelling, or see /open.'), rows);
 }
 
-function pickDebt_(p, list, question) {
+/** Payment order (owner's rule): nearest due date first, then no due date oldest first. */
+function sortForPayment_(recs) {
+  return recs.slice().sort(function (a, b) {
+    if (a.due && b.due) return a.due - b.due;
+    if (a.due || b.due) return a.due ? -1 : 1;
+    const sa = a.start ? a.start.getTime() : 0;
+    const sb = b.start ? b.start.getTime() : 0;
+    return sa - sb || (a.id < b.id ? -1 : 1);
+  });
+}
+
+/** Spreads a payment over records in order: [{ rec, amount }] plus the extra beyond all of them. */
+function allocatePayment_(recs, amount) {
+  let left = amount;
+  const parts = [];
+  recs.forEach(function (r) {
+    if (left <= 0) return;
+    const take = Math.min(left, r.remaining);
+    parts.push({ rec: r, amount: take });
+    left -= take;
+  });
+  return { parts: parts, extra: left };
+}
+
+function pickDebt_(p, list, question, allowAll) {
   p.opts = list.map(function (x) { return x.id; });
   const rows = list.map(function (x, i) { return [btn_(p, debtLabel_(x), 'dr', i)]; });
+  if (allowAll) {
+    const total = list.reduce(function (s, x) { return s + x.remaining; }, 0);
+    rows.push([btn_(p, '✅ All ' + list.length + ' · ' + formatRp_(total), 'dr', 'all')]);
+  }
   rows.push(cancelRow_(p));
   showStep_(p, question, rows);
 }
 
-function askOverpay_(p, rec) {
+function askOverpay_(p, recs, owed) {
   const d = p.d;
-  const extra = d.amount - rec.remaining;
-  const piutang = rec.type === 'Piutang';
-  showStep_(p, '💸 ' + escapeHtml_(rec.id) + ' (' + escapeHtml_(rec.name) + ') has only ' + formatRp_(rec.remaining) +
-    ' remaining, but the payment is ' + formatRp_(d.amount) + ' (' + formatRp_(extra) + ' more). What is the extra?',
+  const extra = d.amount - owed;
+  const piutang = recs[0].type === 'Piutang';
+  const who = recs[0].name;
+  showStep_(p, '💸 ' + escapeHtml_(recs.map(function (r) { return r.id; }).join(', ')) + ' (' + escapeHtml_(who) +
+    ') has only ' + formatRp_(owed) + ' remaining, but the payment is ' + formatRp_(d.amount) + ' (' + formatRp_(extra) +
+    ' more). What is the extra?',
     [[btn_(p, '✏️ Correct the amount', 'ef', 'amount')],
      [btn_(p, piutang ? '💵 Extra is income' : '🧾 Extra is an expense', 'op', piutang ? 'income' : 'expense')],
-     [btn_(p, piutang ? '🔁 Extra: I now owe ' + rec.name : '🔁 Extra: ' + rec.name + ' now owes me', 'op', 'flip')],
+     [btn_(p, piutang ? '🔁 Extra: I now owe ' + who : '🔁 Extra: ' + who + ' now owes me', 'op', 'flip')],
      cancelRow_(p)]);
 }
 
@@ -236,11 +284,14 @@ function debtTypeOf_(p) {
 /** One line of context above a question. */
 function debtSummary_(p) {
   const d = p.d;
-  if (d.kind === 'split') return '🧾 Split bill <b>' + formatRp_(d.total) + '</b>' + (d.note ? ' · ' + escapeHtml_(d.note) : '');
-  if (d.kind === 'new' && d.group) return '🤝 Group ' + d.debtType.toLowerCase() + ' <b>' + formatRp_(d.total) + '</b>';
-  if (d.kind === 'new') return '🤝 ' + d.debtType + ' <b>' + formatRp_(d.amount) + '</b> · ' + escapeHtml_(d.name || '?');
+  const amt = function (v) { return v ? ' <b>' + formatRp_(v) + '</b>' : ''; };
+  const who = function () { return (d.people || []).map(function (x) { return x.name; }).join(', '); };
+  if (d.kind === 'split') return '🧾 Split bill' + amt(d.total) + ' · ' + escapeHtml_(who()) + (d.note ? ' · ' + escapeHtml_(d.note) : '');
+  if (d.kind === 'new' && d.group) return '🤝 Group ' + d.debtType.toLowerCase() + amt(d.total) + ' · ' + escapeHtml_(who());
+  if (d.kind === 'new') return '🤝 ' + d.debtType + amt(d.amount) + ' · ' + escapeHtml_(d.name || '?');
   const verb = { pay: '💸 Payment', add: '➕ Add', convert: '🔚 Convert' }[d.kind];
-  return verb + (d.amount ? ' <b>' + formatRp_(d.amount) + '</b>' : '') + ' · ' + escapeHtml_(d.recordId || d.name || '');
+  // A payment names the person (it may be spread over several records); others name the record(s).
+  return verb + amt(d.amount) + ' · ' + escapeHtml_(d.kind === 'pay' && d.name ? d.name : ((d.recordIds || []).join(', ') || d.name || ''));
 }
 
 function debtPreviewButtons_(p) {
@@ -282,18 +333,22 @@ function buildDebtPreview_(p, ctx, footer) {
     });
     lines.push(dateLine);
   } else {
-    const rec = findDebtById_(ctx.debts, d.recordId);
+    const recs = d.recordIds.map(function (id) { return findDebtById_(ctx.debts, id); });
+    const rec = recs[0];
     const piutang = rec.type === 'Piutang';
     if (d.kind === 'pay') {
-      const paid = Math.min(d.amount, rec.remaining);
-      const after = rec.remaining - paid;
-      lines.push('💸 <b>Preview · Payment</b> · ' + escapeHtml_(rec.id) + ' (' + escapeHtml_(rec.name) + ')',
+      const plan = allocatePayment_(recs, d.amount);
+      lines.push('💸 <b>Preview · Payment</b> · ' + escapeHtml_(rec.name),
         (piutang ? escapeHtml_(rec.name) + ' pays you ' : 'You pay ' + escapeHtml_(rec.name) + ' ') + '<b>' + formatRp_(d.amount) +
-          '</b> · ' + (piutang ? 'into ' : 'from ') + escapeHtml_(d.wallet),
-        'Remaining after: ' + formatRp_(after) + ' (' + (after <= 0 ? 'Paid' : 'Partial') + ')');
-      const extra = d.amount - paid;
-      if (extra > 0) {
-        lines.push('Extra ' + formatRp_(extra) + ' → ' + (d.overpay === 'flip'
+          '</b> · ' + (piutang ? 'into ' : 'from ') + escapeHtml_(d.wallet));
+      if (plan.parts.length > 1) lines.push('<i>Nearest due date first, then the oldest:</i>');
+      plan.parts.forEach(function (x) {
+        const after = x.rec.remaining - x.amount;
+        lines.push('• ' + escapeHtml_(x.rec.id) + ': ' + formatRp_(x.amount) + ' → remaining ' + formatRp_(after) +
+          ' (' + (after <= 0 ? 'Paid' : 'Partial') + ')' + (x.rec.due ? ' · due ' + formatDate_(x.rec.due) : ''));
+      });
+      if (plan.extra > 0) {
+        lines.push('Extra ' + formatRp_(plan.extra) + ' → ' + (d.overpay === 'flip'
           ? 'new ' + (piutang ? 'hutang: you owe ' : 'piutang: owes you ') + escapeHtml_(rec.name)
           : (d.overpay === 'income' ? 'Income' : 'Expense') + ' · ' + escapeHtml_(d.extraCategory)));
       }
@@ -302,12 +357,13 @@ function buildDebtPreview_(p, ctx, footer) {
         '+' + formatRp_(d.amount) + ' · ' + (piutang ? 'from ' : 'into ') + escapeHtml_(d.wallet),
         'Remaining after: ' + formatRp_(rec.remaining + d.amount));
     } else {
-      const recs = convertTargets_(ctx.debts, rec);
-      const total = recs.reduce(function (s, x) { return s + x.remaining; }, 0);
-      lines.push('🔚 <b>Preview · Convert ' + escapeHtml_(rec.id) + '</b> (' + escapeHtml_(rec.name) + ')',
+      const targets = convertTargetsOf_(ctx.debts, recs);
+      const total = targets.reduce(function (s, x) { return s + x.remaining; }, 0);
+      lines.push('🔚 <b>Preview · Convert ' + escapeHtml_(recs.map(function (r) { return r.id; }).join(', ')) + '</b> (' +
+          escapeHtml_(rec.name) + ')',
         'Remaining ' + formatRp_(total) + ' → ' + (piutang ? 'Expense' : 'Income') + ' · ' + escapeHtml_(d.category),
         '<i>No money moves; it counts as ' + (piutang ? 'an expense' : 'income') + ' from now on.</i>');
-      if (recs.length > 1) recs.forEach(function (x) { lines.push('• ' + escapeHtml_(x.id) + ' ' + escapeHtml_(x.name) + ': ' + formatRp_(x.remaining)); });
+      if (targets.length > 1) targets.forEach(function (x) { lines.push('• ' + escapeHtml_(x.id) + ' ' + escapeHtml_(x.name) + ': ' + formatRp_(x.remaining)); });
     }
     lines.push('📅 ' + formatDate_(d.date));
   }
@@ -320,6 +376,15 @@ function buildDebtPreview_(p, ctx, footer) {
 function convertTargets_(debts, rec) {
   const kids = childrenOf_(debts, rec.id).filter(isOpenDebt_);
   return kids.length ? kids : [rec];
+}
+
+/** All records a conversion of these picks turns into Expense/Income (groups expanded, no doubles). */
+function convertTargetsOf_(debts, recs) {
+  const out = [];
+  recs.forEach(function (r) {
+    convertTargets_(debts, r).forEach(function (x) { if (out.indexOf(x) === -1) out.push(x); });
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -345,15 +410,15 @@ function debtCallback_(p, action, arg, user) {
     case 'dw': d.wallet = p.opts[Number(arg)]; d.walletChoices = null; break;
     case 'dc': d.category = p.opts[Number(arg)]; d.categoryHow = 'chosen'; break;
     case 'xc': d.extraCategory = p.opts[Number(arg)]; break;
-    case 'dr': {
-      d.recordId = p.opts[Number(arg)];
-      const rec = findDebtById_(ctx.debts, d.recordId);
+    case 'dr': { // picked one record, or "All" (convert)
+      d.recordIds = arg === 'all' ? p.opts.slice() : [p.opts[Number(arg)]];
+      const rec = findDebtById_(ctx.debts, d.recordIds[0]);
       if (rec) d.recordType = rec.type;
       break;
     }
     case 'op': d.overpay = arg; break;
     case 'newrec': // "No open record — create a new one"
-      Object.assign(d, { kind: 'new', group: false, recordId: null });
+      Object.assign(d, { kind: 'new', group: false, recordId: null, recordIds: null });
       break;
     case 'term': d.term = d.term === 'Long' ? 'Short' : 'Long'; if (d.term === 'Long') d.due = null; break;
     case 'nodue': d.due = null; break;
@@ -399,15 +464,26 @@ function handleDebtText_(p, message) {
   const text = String(message.text).trim();
   const d = p.d;
   const now = new Date();
-  if (p.awaitText === 'amount') {
+  if (p.awaitText === 'amount' || p.awaitText === 'total') {
     const a = parseAmountToken_(text);
     if (a === null || a.ambiguous) {
-      sendMessage(p.chatId, "I couldn't read that amount. Send e.g. <code>500rb</code>, or tap Back.");
+      sendMessage(p.chatId, "I couldn't read that amount. Send e.g. <code>500rb</code>.");
       return;
     }
-    d.amount = a.value;
-    d.full = false;
-    d.overpay = null;
+    if (p.awaitText === 'total') {
+      const shares = computeShares_(d.rawShares.people, a.value, d.rawShares.me);
+      if (shares.error) {
+        sendMessage(p.chatId, debtErrorText_({ error: shares.error, sum: shares.sum, total: shares.total }) +
+          ' Send the total again.');
+        return;
+      }
+      Object.assign(d, sharesToDraft_(shares, d.rawShares));
+    } else {
+      d.amount = a.value;
+      d.needsAmount = false;
+      d.full = false;
+      d.overpay = null;
+    }
   } else if (p.awaitText === 'name') {
     const contact = findContact_(loadContacts_(openMainSheet_()), text);
     d.name = contact ? contact.name : text.slice(0, 40);
@@ -462,6 +538,7 @@ function saveDebt_(p, ctx, user) {
   };
   const newContacts = [];
   let text = '';
+  let touchedIds = null; // records a payment actually reached
 
   withScriptLock_(function () {
     if (d.kind === 'new' && !d.group) {
@@ -503,34 +580,42 @@ function saveDebt_(p, ctx, user) {
       text = '✅ Saved split bill (' + link + '): ' + (d.me > 0 ? 'your share ' + formatRp_(d.me) + ' + ' : '') +
         created.length + ' piutang (' + created.join(', ') + ').';
     } else {
-      const rec = findDebtById_(loadDebts_(ss), d.recordId);
-      if (!rec || !isOpenDebt_(rec)) { text = '⚠️ ' + escapeHtml_(d.recordId) + ' is no longer open. Nothing was saved.'; return; }
+      const all = loadDebts_(ss);
+      const recs = d.recordIds.map(function (id) { return findDebtById_(all, id); });
+      if (recs.some(function (r) { return !r || !isOpenDebt_(r); })) {
+        text = '⚠️ ' + escapeHtml_(d.recordIds.join(', ')) + ' is no longer open. Nothing was saved.';
+        return;
+      }
+      const rec = recs[0];
       const piutang = rec.type === 'Piutang';
       if (d.kind === 'pay') {
-        const paid = Math.min(d.amount, rec.remaining);
-        const extra = d.amount - paid;
-        const link = extra > 0 ? nextId_(trxSheet, 'Link ID', 'LNK') : '';
-        trx({ type: 'Settlement', direction: piutang ? 'In' : 'Out', amount: paid, debtId: rec.id,
-          note: d.note || (piutang ? rec.name + ' paid back ' : 'Paid back ' + rec.name + ' ') + rec.id }, link);
-        if (extra > 0 && d.overpay === 'flip') {
+        const plan = allocatePayment_(recs, d.amount); // nearest due date first, then the oldest
+        const link = plan.parts.length > 1 || plan.extra > 0 ? nextId_(trxSheet, 'Link ID', 'LNK') : '';
+        plan.parts.forEach(function (x) {
+          trx({ type: 'Settlement', direction: piutang ? 'In' : 'Out', amount: x.amount, debtId: x.rec.id,
+            note: d.note || (piutang ? rec.name + ' paid back ' : 'Paid back ' + rec.name + ' ') + x.rec.id }, link);
+        });
+        touchedIds = plan.parts.map(function (x) { return x.rec.id; });
+        const ids = touchedIds.join(', ');
+        if (plan.extra > 0 && d.overpay === 'flip') {
           const type = piutang ? 'Hutang' : 'Piutang';
           const id = nextId_(debtSheet, 'Debt ID', DEBT_PREFIX[type], 3);
           writeDebtRecord_(ss, { id: id, link: link, type: type, term: 'Short', name: rec.name, date: d.date,
-            wallet: d.wallet, amount: extra });
-          trx({ type: type, amount: extra, debtId: id, note: 'Overpayment on ' + rec.id }, link);
+            wallet: d.wallet, amount: plan.extra });
+          trx({ type: type, amount: plan.extra, debtId: id, note: 'Overpayment on ' + ids }, link);
           created.push(id);
-        } else if (extra > 0) {
-          trx({ type: piutang ? 'Income' : 'Expense', amount: extra, category: d.extraCategory, categoryHow: 'chosen',
-            note: 'Overpayment on ' + rec.id }, link);
+        } else if (plan.extra > 0) {
+          trx({ type: piutang ? 'Income' : 'Expense', amount: plan.extra, category: d.extraCategory, categoryHow: 'chosen',
+            note: 'Overpayment on ' + ids }, link);
         }
-        text = '✅ Payment ' + formatRp_(d.amount) + ' for <b>' + rec.id + '</b> ' + (piutang ? 'into ' : 'from ') +
+        text = '✅ Payment ' + formatRp_(d.amount) + ' for <b>' + ids + '</b> ' + (piutang ? 'into ' : 'from ') +
           escapeHtml_(d.wallet) + '.';
       } else if (d.kind === 'add') {
         trx({ type: 'Addition', direction: piutang ? 'Out' : 'In', amount: d.amount, debtId: rec.id,
           note: d.note || 'Added to ' + rec.id }, '');
         text = '✅ Added ' + formatRp_(d.amount) + ' to <b>' + rec.id + '</b>.';
       } else {
-        const targets = convertTargets_(loadDebts_(ss), rec);
+        const targets = convertTargetsOf_(all, recs);
         const convCol = getHeaderMap_(debtSheet)['converted trx'];
         const link = targets.length > 1 ? nextId_(trxSheet, 'Link ID', 'LNK') : '';
         targets.forEach(function (x) {
@@ -539,19 +624,32 @@ function saveDebt_(p, ctx, user) {
             note: 'Converted ' + x.id + ' (' + x.name + ')' }, link);
           debtSheet.getRange(x.row, convCol + 1).setValue(id);
         });
-        if (targets[0].id !== rec.id) debtSheet.getRange(rec.row, convCol + 1).setValue(saved.join(', '));
-        text = '✅ <b>' + rec.id + '</b> converted → ' + saved.join(', ') + ' (' + (piutang ? 'Expense' : 'Income') + ', ' +
-          escapeHtml_(d.category) + ', ' + formatRp_(entries.reduce(function (s, e) { return s + e.amount; }, 0)) + ').';
+        // A converted group parent lists its sub-records' conversions too.
+        recs.forEach(function (r) {
+          if (targets.indexOf(r) === -1) debtSheet.getRange(r.row, convCol + 1).setValue(saved.join(', '));
+        });
+        text = '✅ <b>' + recs.map(function (r) { return r.id; }).join(', ') + '</b> converted → ' + saved.join(', ') +
+          ' (' + (piutang ? 'Expense' : 'Income') + ', ' + escapeHtml_(d.category) + ', ' +
+          formatRp_(entries.reduce(function (s, e) { return s + e.amount; }, 0)) + ').';
       }
     }
   });
 
   newContacts.forEach(function (n) { addContact_(ss, n, []); });
   if (newContacts.length) text += '\n👤 Added to Contacts: ' + escapeHtml_(newContacts.join(', ')) + '.';
-  if (d.kind === 'pay' || d.kind === 'add') {
+  if ((d.kind === 'pay' || d.kind === 'add') && d.recordIds) {
     SpreadsheetApp.flush();
-    const rec = findDebtById_(loadDebts_(ss), d.recordId);
-    if (rec) text += ' Remaining: ' + formatRp_(rec.remaining) + ' (' + escapeHtml_(rec.status) + ')';
+    const now = loadDebts_(ss);
+    const recs = (d.kind === 'add' ? d.recordIds.slice(0, 1) : (touchedIds || d.recordIds)).map(function (id) { return findDebtById_(now, id); })
+      .filter(Boolean);
+    const touched = recs;
+    if (touched.length === 1) {
+      text += ' Remaining: ' + formatRp_(touched[0].remaining) + ' (' + escapeHtml_(touched[0].status) + ')';
+    } else {
+      touched.forEach(function (r) {
+        text += '\n• ' + escapeHtml_(r.id) + ': remaining ' + formatRp_(r.remaining) + ' (' + escapeHtml_(r.status) + ')';
+      });
+    }
   }
   editMessage(p.chatId, p.msgId, text);
   afterSave_(ss, p.chatId, entries);
@@ -581,6 +679,7 @@ function debtUndoPlan_(ss, groupRows, allRows) {
     return { blocked: 'That entry created ' + creations.join(', ') + ', which already has later entries (' +
       later.map(function (r) { return r['trx id']; }).join(', ') + '). Undo those first.' };
   }
+  if (creations.length === 0) return { deleteDebts: [], reopen: reopen };
   // Group parents go too when all of their sub-records are deleted.
   const debts = loadDebts_(ss);
   const parents = [];
@@ -596,7 +695,7 @@ function debtUndoPlan_(ss, groupRows, allRows) {
 
 /** Applies a debt undo plan (inside the undo, after the Transactions rows are gone). */
 function applyDebtUndo_(ss, plan) {
-  if (!plan || plan.blocked) return;
+  if (!plan || plan.blocked || (plan.deleteDebts.length === 0 && plan.reopen.length === 0)) return;
   withScriptLock_(function () {
     const sheet = ss.getSheetByName(TAB.DEBTS);
     const debts = loadDebts_(ss);
@@ -619,18 +718,24 @@ function applyDebtUndo_(ss, plan) {
 // /open
 // ---------------------------------------------------------------------------
 
-function startOpen_(chatId) {
+/**
+ * /open (everything), /piutang or /hutang (one type), optionally with a name:
+ * /piutang budi. Same password and auto-delete switches as /open.
+ */
+function startOpen_(chatId, only, filter) {
   loadSettingsTab_(true);
   if (getSettingYes_(SETTING.OPEN_PASSWORD)) {
-    askPassword_(chatId, 'open', {}, '🔒 Enter the password to see open hutang/piutang.\n' +
+    askPassword_(chatId, 'open', { only: only || '', filter: filter || '' }, '🔒 Enter the password to see open hutang/piutang.\n' +
       '<i>You can turn this off in Settings → Password for /open.</i>');
     return;
   }
-  showOpen_(chatId, false);
+  showOpen_(chatId, false, only, filter);
 }
 
-function showOpen_(chatId, isDefaultPassword) {
-  let text = buildOpenText_(loadDebts_(openMainSheet_()), new Date());
+function showOpen_(chatId, isDefaultPassword, only, filter) {
+  const ss = openMainSheet_();
+  const contact = filter ? findContact_(loadContacts_(ss), filter) : null; // an alias finds the contact too
+  let text = buildOpenText_(loadDebts_(ss), new Date(), undefined, only, contact ? contact.name : filter);
   if (isDefaultPassword) text += '\n\n⚠️ You are still using the default password <b>0000</b>. Change it with /changepass.';
   const autoDelete = getSettingYes_(SETTING.OPEN_AUTO_DELETE);
   if (autoDelete) text += '\n\n🕒 This message will be deleted in ' + formatDelay_(OPEN_DELETE_SECONDS) + '.';
@@ -654,26 +759,40 @@ function debtTiming_(d, now) {
   return open <= 0 ? 'since today' : 'open ' + open + ' day' + (open === 1 ? '' : 's');
 }
 
-/** The /open reply: open piutang then hutang, groups with their people. Pure. */
-function buildOpenText_(debts, now, hide) {
-  const lines = ['📒 <b>Open hutang / piutang</b>'];
+/**
+ * The /open reply: open piutang then hutang, groups with their people. only =
+ * 'Piutang' / 'Hutang' limits it to one type; filter = a name (a group shows if
+ * one of its people matches). Pure.
+ */
+function buildOpenText_(debts, now, hide, only, filter) {
+  const f = String(filter || '').trim().toLowerCase();
+  const title = only ? (only === 'Piutang' ? 'Open piutang (they owe you)' : 'Open hutang (you owe)') : 'Open hutang / piutang';
+  const lines = ['📒 <b>' + title + '</b>' + (f ? ' — ' + escapeHtml_(filter) : '')];
   let any = false;
-  ['Piutang', 'Hutang'].forEach(function (type) {
-    const top = debts.filter(function (d) { return d.type === type && isOpenDebt_(d) && !d.parent; });
-    if (top.length === 0) return;
+  (only ? [only] : ['Piutang', 'Hutang']).forEach(function (type) {
+    // With a name: only that person's own records (group parts included, group totals left out).
+    const items = f
+      ? debts.filter(function (d) {
+          return d.type === type && isOpenDebt_(d) && childrenOf_(debts, d.id).length === 0 && d.name.toLowerCase() === f;
+        })
+      : debts.filter(function (d) { return d.type === type && isOpenDebt_(d) && !d.parent; });
+    if (items.length === 0) return;
     any = true;
-    const total = top.reduce(function (s, d) { return s + d.remaining; }, 0);
+    const total = items.reduce(function (s, d) { return s + d.remaining; }, 0);
     lines.push('', '<b>' + type + '</b> ' + (type === 'Piutang' ? '(they owe you)' : '(you owe)') + ' · ' + money_(total, hide));
-    top.forEach(function (d) {
-      const timing = debtTiming_(d, now);
+    items.forEach(function (d) {
+      const parent = d.parent ? findDebtById_(debts, d.parent) : null;
+      const timing = debtTiming_(parent && !d.due ? Object.assign({}, d, { due: parent.due, start: parent.start }) : d, now);
       lines.push('• ' + escapeHtml_(d.id) + ' ' + escapeHtml_(d.name) + ' — ' + money_(d.remaining, hide) +
-        (timing ? ' · ' + timing : ''));
-      childrenOf_(debts, d.id).filter(isOpenDebt_).forEach(function (k) {
-        lines.push('   ◦ ' + escapeHtml_(k.id) + ' ' + escapeHtml_(k.name) + ' — ' + money_(k.remaining, hide));
-      });
+        (timing ? ' · ' + timing : '') + (parent ? ' <i>(group ' + escapeHtml_(parent.id) + ')</i>' : ''));
+      if (!f) {
+        childrenOf_(debts, d.id).filter(isOpenDebt_).forEach(function (k) {
+          lines.push('   ◦ ' + escapeHtml_(k.id) + ' ' + escapeHtml_(k.name) + ' — ' + money_(k.remaining, hide));
+        });
+      }
     });
   });
-  if (!any) lines.push('', 'Nothing open. 🎉');
+  if (!any) lines.push('', f ? 'Nothing open for ' + escapeHtml_(filter) + '. 🎉' : 'Nothing open. 🎉');
   return lines.join('\n');
 }
 

@@ -8,6 +8,7 @@
  */
 
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
+const GEMINI_TRIES = 3; // retries only for 503 / 500 / network errors
 
 /**
  * Sends a prompt and returns the parsed JSON answer, or null on any failure.
@@ -21,23 +22,35 @@ function callGeminiJson_(prompt, source) {
     return null;
   }
   const model = getSetting_(SETTING.GEMINI_MODEL);
+  const request = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'x-goog-api-key': key },
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+    })
+  };
+  // Google's free tier sometimes answers 503 "high demand" (or 500): wait 1s, then 2s, and try
+  // again — at most 3 tries (~3s extra), so a busy moment doesn't lose the AI answer.
   let response;
-  try {
-    response = UrlFetchApp.fetch(GEMINI_URL + encodeURIComponent(model) + ':generateContent', {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'x-goog-api-key': key },
-      muteHttpExceptions: true,
-      payload: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0, responseMimeType: 'application/json' }
-      })
-    });
-  } catch (err) {
+  let code = 0;
+  for (let attempt = 1; attempt <= GEMINI_TRIES; attempt++) {
+    try {
+      response = UrlFetchApp.fetch(GEMINI_URL + encodeURIComponent(model) + ':generateContent', request);
+      code = response.getResponseCode();
+    } catch (err) {
+      response = null;
+      code = 0; // network error: also worth one more try
+    }
+    if (code === 200 || (code !== 0 && code !== 500 && code !== 503) || attempt === GEMINI_TRIES) break;
+    Utilities.sleep(1000 * attempt);
+  }
+  if (response === null) {
     logAiFailure_(source, 'network error');
     return null;
   }
-  const code = response.getResponseCode();
   if (code !== 200) {
     logAiFailure_(source, code === 429 ? 'rate limit (HTTP 429)' : 'HTTP ' + code,
       response.getContentText().slice(0, 300));

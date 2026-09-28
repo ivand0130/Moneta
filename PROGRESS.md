@@ -3,10 +3,11 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 4 — code pushed (2026-09-28), waiting on upgradeSheets + deploy +
-Telegram test.
-Phase 3 — DONE (2026-09-28). Phase 2B — DONE. Phase 2 — DONE.
-Next after 4: Phase 5 — Favorites and reminders.
+Phase 4 — DONE (2026-09-28). Telegram checklist passed.
+Phase 3, 2B, 2, 1, 0 — DONE.
+Next: Phase 5 — Favorites and reminders (incl. the debt reminders: daily
+08:00, Monday weekly, monthly 1st, snooze — the Hutang_Piutang tab already
+has Last Reminder and Snoozed Until).
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)
@@ -204,11 +205,41 @@ Still to change in code that is already built:
     1s + 2s); the reply notes when the AI step failed; testGemini lists the
     models the key can use
   - Tests: testParser 102, testAdjust 15, testLinkedEntries 12, testAiParse 12
+- Phase 4 (hutang / piutang, group piutang, split bill, pelunasan, convert)
+  - parseDebt_ (Parser.gs, pure): kinds new / split / pay / add / convert.
+    Lend/borrow words ("Budi pinjam" = piutang), due dates (extractDueDate_:
+    dd/mm, "30 okt", "tgl 10", "5 hari", "bulan depan"), long term, IDs
+    (PTG-001, PTG-010-A). Comma mode: commas separate people (any case), a
+    full stop ends the header (note/category); without a full stop a first
+    part word is the note only if it is a category keyword. Plain mode: in a
+    split, Capitalized words are names. Several names / "piutang split" =
+    group; including aku/saya in a piutang = split bill; a split includes me
+    ONLY with aku/saya. Missing amount/total → needsAmount / needsTotal
+    (asked, entry kept). computeShares_: friends round down, leftover to me
+    (or the first person)
+  - Debts.gs: records (loadDebts_), resolveDebtTarget_ (pay: spread over all
+    open records, nearest due date first then oldest — sortForPayment_,
+    allocatePayment_; add: pick one; convert: pick or [All]; unknown name →
+    "No open … Create a new one?"), overpayment (correct / income-expense /
+    flip into a new record the other way), previews, saveDebt_ (Debt ID on
+    every row, Link ID for groups/splits/multi-record payments, new names
+    added to Contacts), conversions = Expense/Income rows with Direction
+    None (record category suggested; group = every open person)
+  - Hutang_Piutang: Added/Paid/Converted/Remaining/Status are formulas
+    (debtSumFormula_ sums Transactions by Debt ID incl. "ID-*" sub-records);
+    upgradeDebtColumns_ converted the existing sheet
+  - /undo: removes records a debt entry created (blocked while later rows
+    exist), reopens converted records (debtUndoPlan_ / applyDebtUndo_)
+  - /open, /piutang, /hutang [name] (buildOpenText_, "Password for /open",
+    "Open auto-delete" 60s), /contact, /contact add (Contacts.gs)
+  - The shared rule stays: countsAsExpense_ = Type Expense (conversions are
+    Expense rows), so budgets, Spent column, reports and Dashboard agree
+  - Missing Contacts / Hutang_Piutang tabs no longer break other messages
+  - Tests: testDebtParser 51, testShares 5
 
 ## Known issues
-- Conversion (debt → income/expense) rows: how they count in totals and
-  balances is decided in Phase 4. Dashboard cash flow counts only
-  Type = Income / Expense
+- (Resolved in Phase 4) Conversions are Expense/Income rows with Direction
+  None, so every total that counts Type = Expense / Income includes them
 - Price columns use Rp#,##0, so fractional unit prices (e.g. reksadana NAV)
   display rounded (the stored value is exact)
 - Closed-month protection is not built yet (Closing phase)
@@ -245,6 +276,10 @@ Still to change in code that is already built:
 - Testing approach: pure logic runs in Node before pushing, plus a fake
   end-to-end run (fake SpreadsheetApp/Cache/Telegram) of whole
   conversations; the real sheet is then checked with the editor tests
+- Owner decisions in Phase 4: several names or "piutang split" = group; commas
+  separate names, a full stop ends the note; a split includes me only with
+  aku/saya; payments go to the nearest due date first, then the oldest;
+  missing amounts are asked, not errors; /piutang and /hutang lists
 - Owner decisions in Phase 2: no balances on "✅ Saved"; /saldo delete fixed
   at 60s (no setting); password in the Settings tab; expense buttons limited
   to Spending Wallet Groups

@@ -489,6 +489,7 @@ function afterSave_(ss, chatId, entries) {
         spent: spentInMonth_(rows, parts[0], year, month) };
     });
 
+    loadSettingsTab_(true); // fresh: "Budget auto-delete" / "Hide amounts" changes apply right away
     const autoDelete = getSettingYes_(SETTING.BUDGET_AUTO_DELETE);
     const text = buildBudgetText_(items) + (autoDelete ? '\n\n🕒 <i>Deleted at the end of the day.</i>' : '');
     const sent = sendMessage(chatId, text);

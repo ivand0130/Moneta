@@ -107,9 +107,16 @@ function loadCtx_() {
 function startTransaction_(message) {
   const chatId = String(message.chat.id);
   const ctx = loadCtx_();
-  const parsed = parseTransaction_(message.text, {
+  let parsed = parseTransaction_(message.text, {
     wallets: ctx.wallets, categories: ctx.categories, investmentGroups: ctx.investmentGroups, now: new Date()
   });
+  // AI fallback (only when the rules found no clear amount and the text looks like it has one).
+  if (!parsed.ok && (parsed.error === 'no_amount' || parsed.error === 'multiple_amounts') &&
+      looksLikeMoney_(message.text) && getSettingYes_(SETTING.AI_ENABLED)) {
+    sendTyping_(chatId);
+    const ai = aiParseTransaction_(message.text, ctx, new Date());
+    if (ai) parsed = ai;
+  }
   if (!parsed.ok) {
     sendMessage(chatId, parseErrorText_(parsed));
     return;
@@ -131,7 +138,9 @@ function startTransaction_(message) {
     category: parsed.category,
     categoryHow: parsed.categoryHow,
     unknownTag: parsed.unknownTag,
-    note: parsed.note
+    note: parsed.note,
+    extra: parsed.extra || null,   // transfer fee / received amount / partial expense (SPEC Section 6)
+    readByAi: !!parsed.readByAi
   });
   if (p.d.type !== 'Transfer' && !p.d.category) aiCategory_(p, ctx);
   p.orig = p.d.category; // to spot a correction later (→ offer to save a keyword)
@@ -165,6 +174,33 @@ function advanceTrx_(p, ctx) {
       d.toWallet = null;
       return askWallet_(p, ctx, 'to', 'From and To must be different wallets.');
     }
+    // The source wallet's Default Transfer Fee is suggested once (removable in the preview).
+    if (!d.feeChecked) {
+      d.feeChecked = true;
+      const src = findWallet_(ctx.wallets, d.wallet);
+      if (!d.extra && src && src.defaultFee > 0) {
+        d.extra = newFeeExtra_(src.defaultFee, ctx);
+        d.extra.suggested = true;
+      }
+    }
+    if (d.extra) {
+      const x = d.extra;
+      if (x.kind === 'received') return askReceived_(p);
+      if (x.amount >= d.amount) {
+        return showStep_(p, '⚠️ The ' + (x.kind === 'fee' ? 'fee' : 'spent part') + ' (' + formatRp_(x.amount) +
+          ') must be smaller than the transfer (' + formatRp_(d.amount) + '). Please correct it.',
+          [[btn_(p, '✏️ Edit', 'e'), btn_(p, '❌ Cancel', 'n')]]);
+      }
+      if (x.kind === 'partial' && !x.from) return askPartialFrom_(p);
+      if (!ctx.categories.some(function (c) { return c.name === x.category && c.type === 'Expense'; })) {
+        x.category = null;
+        if (!x.aiTried) {
+          x.aiTried = true;
+          aiExtraCategory_(p, ctx);
+        }
+        if (!x.category) return askCategory_(p, ctx, 'extra');
+      }
+    }
   } else {
     if (!ctx.categories.some(function (c) { return c.name === d.category && c.type === d.type; })) {
       d.category = null;
@@ -188,8 +224,101 @@ function advanceTrx_(p, ctx) {
       [[btn_(p, "📅 Use today", 'today'), btn_(p, '❌ Cancel', 'n')]]);
   }
 
-  showStep_(p, buildPreviewText_(p, ctx, 'Save?'),
-    [[btn_(p, '✅ Yes', 'y'), btn_(p, '❌ No', 'n'), btn_(p, '✏️ Edit', 'e')]]);
+  const rows = [[btn_(p, '✅ Yes', 'y'), btn_(p, '❌ No', 'n'), btn_(p, '✏️ Edit', 'e')]];
+  if (d.extra && d.extra.suggested) rows.push([btn_(p, '🚫 No fee', 'xr')]);
+  showStep_(p, buildPreviewText_(p, ctx, 'Save?'), rows);
+}
+
+// ---------------------------------------------------------------------------
+// Transfers with a fee, a received amount or a partial expense (SPEC Section 6)
+// ---------------------------------------------------------------------------
+// d.extra = { kind: 'fee' | 'partial' | 'received', amount, category,
+//             categoryHow, note, from: 'source' | 'dest' (partial only), suggested }
+//   fee      "admin X" / "dipotong X": Transfer = amount, fee paid ON TOP by the source
+//   partial  "Y untuk makan": from source → Transfer = amount − Y, expense from the source;
+//            from dest → Transfer = amount, expense from the destination
+//   received "sampai R": asked first, then becomes a fee, a partial (source) or nothing
+
+/** A fee extra with the fee category (keyword "admin", else "Admin & Bank Fees", else asked). */
+function newFeeExtra_(amount, ctx) {
+  const k = matchKeyword_('admin', ctx.categories, ['Expense']);
+  const byName = ctx.categories.filter(function (c) { return c.type === 'Expense' && c.name === DEFAULT_FEE_CATEGORY; })[0];
+  const category = byName ? byName.name : (k ? k.category : null);
+  return { kind: 'fee', amount: amount, category: category, categoryHow: category ? 'keyword' : '', note: '' };
+}
+
+/**
+ * The rows a draft saves: one row normally, or Transfer + Expense for a
+ * transfer with an extra. Each: { type, amount, wallet, toWallet, category,
+ * categoryHow, note, date }.
+ */
+function entriesOf_(d) {
+  const main = { type: d.type, amount: d.amount, wallet: d.wallet, toWallet: d.type === 'Transfer' ? d.toWallet : '',
+    category: d.type === 'Transfer' ? '' : d.category, categoryHow: d.type === 'Transfer' ? '' : d.categoryHow,
+    note: d.note, date: d.date };
+  const x = d.extra;
+  if (d.type !== 'Transfer' || !x || x.kind === 'received') return [main];
+  const fromSource = x.kind === 'fee' || x.from === 'source';
+  if (x.kind === 'partial' && x.from === 'source') main.amount = d.amount - x.amount;
+  const note = x.note || (x.kind === 'fee' ? 'Transfer fee ' : 'Spent during transfer ') + d.wallet + ' → ' + d.toWallet;
+  return [main, { type: 'Expense', amount: x.amount, wallet: fromSource ? d.wallet : d.toWallet, toWallet: '',
+    category: x.category, categoryHow: x.categoryHow, note: note, date: d.date }];
+}
+
+/** How much each wallet changes: { walletName: +/- amount }. */
+function walletDeltas_(entries) {
+  const out = {};
+  const add = function (name, v) { out[name] = (out[name] || 0) + v; };
+  entries.forEach(function (e) {
+    if (e.type === 'Income') add(e.wallet, e.amount);
+    else add(e.wallet, -e.amount);
+    if (e.type === 'Transfer') add(e.toWallet, e.amount);
+  });
+  return out;
+}
+
+/** "sampai R": ask what the difference between sent and received was. */
+function askReceived_(p) {
+  const d = p.d;
+  const received = d.extra.amount;
+  if (received === d.amount) {
+    d.extra = null;
+    return advanceTrx_(p, loadCtx_());
+  }
+  if (received > d.amount) {
+    return showStep_(p, summaryLine_(p) + '\nYou wrote that ' + formatRp_(received) + ' arrived, which is MORE than ' +
+      formatRp_(d.amount) + '. Was the transfer actually ' + formatRp_(received) + '?',
+      [[btn_(p, '✏️ Yes, it was ' + formatRp_(received), 'rx', 'typo')], cancelRow_(p)]);
+  }
+  const diff = d.amount - received;
+  showStep_(p, summaryLine_(p) + '\nSent ' + formatRp_(d.amount) + ', received ' + formatRp_(received) + ': ' +
+    '<b>' + formatRp_(diff) + '</b> difference. What was it?',
+    [[btn_(p, '💸 A fee', 'rx', 'fee'), btn_(p, '🛒 Spent on something', 'rx', 'spent')],
+     [btn_(p, '✏️ Typo: the transfer was ' + formatRp_(received), 'rx', 'typo')], cancelRow_(p)]);
+}
+
+/** Partial expense: spent from the source before sending, or from the destination after? */
+function askPartialFrom_(p) {
+  const d = p.d;
+  const x = d.extra;
+  showStep_(p, '🔁 Transfer <b>' + formatRp_(d.amount) + '</b> ' + escapeHtml_(d.wallet) + ' → ' + escapeHtml_(d.toWallet) +
+    '\nIs the ' + formatRp_(x.amount) + (x.note ? ' (' + escapeHtml_(x.note) + ')' : '') + ' spent from <b>' +
+    escapeHtml_(d.wallet) + '</b> (only ' + formatRp_(d.amount - x.amount) + ' transferred) or from <b>' +
+    escapeHtml_(d.toWallet) + '</b> after the transfer?',
+    [[btn_(p, 'From ' + d.wallet, 'pf', 'source'), btn_(p, 'From ' + d.toWallet, 'pf', 'dest')], cancelRow_(p)]);
+}
+
+/** Gemini guess for the extra part's category (partial expenses with a note). */
+function aiExtraCategory_(p, ctx) {
+  const x = p.d.extra;
+  if (x.kind !== 'partial' || !x.note || !getSettingYes_(SETTING.AI_ENABLED)) return;
+  sendTyping_(p.chatId);
+  const names = ctx.categories.filter(function (c) { return c.type === 'Expense'; }).map(function (c) { return c.name; });
+  const pick = aiSuggestCategory_(x.note, 'Expense', names);
+  if (pick) {
+    x.category = pick;
+    x.categoryHow = 'ai';
+  }
 }
 
 /** "tgl 10" was read as the nearest past 10th: confirm it or pick another date. */
@@ -241,10 +370,18 @@ function askWallet_(p, ctx, which, warning) {
   showStep_(p, (warning ? '⚠️ ' + escapeHtml_(warning) + '\n' : '') + summaryLine_(p) + '\n' + question, rows);
 }
 
-function askCategory_(p, ctx) {
-  p.opts = ctx.categories.filter(function (c) { return c.type === p.d.type; }).map(function (c) { return c.name; });
-  const rows = chunk_(p.opts.map(function (n, i) { return btn_(p, n, 'c', i); }), 2);
+/** target 'extra' = the category of a transfer's fee / spent part. */
+function askCategory_(p, ctx, target) {
+  const forExtra = target === 'extra';
+  const type = forExtra ? 'Expense' : p.d.type;
+  p.opts = ctx.categories.filter(function (c) { return c.type === type; }).map(function (c) { return c.name; });
+  const rows = chunk_(p.opts.map(function (n, i) { return btn_(p, n, forExtra ? 'xc' : 'c', i); }), 2);
   rows.push(cancelRow_(p));
+  if (forExtra) {
+    const x = p.d.extra;
+    return showStep_(p, summaryLine_(p) + '\nWhich category is the ' + formatRp_(x.amount) +
+      (x.kind === 'fee' ? ' fee' : (x.note ? ' (' + escapeHtml_(x.note) + ')' : ' spent part')) + '?', rows);
+  }
   const intro = p.d.unknownTag ? "I don't know the category #" + escapeHtml_(p.d.unknownTag) + '.\n' : '';
   showStep_(p, intro + summaryLine_(p) + '\nWhich category?', rows);
 }
@@ -262,30 +399,45 @@ const CATEGORY_HOW_LABEL = { tag: 'your #tag', keyword: 'keyword', ai: 'AI', cho
 function buildPreviewText_(p, ctx, footer) {
   const d = p.d;
   const w = findWallet_(ctx.wallets, d.wallet);
+  const entries = entriesOf_(d);
   const lines = [];
+  const how = function (h) { return ' <i>(' + (CATEGORY_HOW_LABEL[h] || 'you picked') + ')</i>'; };
   if (d.type === 'Transfer') {
     const tw = findWallet_(ctx.wallets, d.toWallet);
-    lines.push('🔁 <b>Preview</b>',
-      'Transfer <b>' + formatRp_(d.amount) + '</b>',
-      '👛 ' + escapeHtml_(w.name) + ' (' + escapeHtml_(w.group) + ') → ' + escapeHtml_(tw.name) + ' (' + escapeHtml_(tw.group) + ')',
-      escapeHtml_(w.name) + ' ' + formatRpSigned_(-d.amount) + ' | ' + escapeHtml_(tw.name) + ' ' + formatRpSigned_(d.amount));
+    const route = escapeHtml_(w.name) + ' (' + escapeHtml_(w.group) + ') → ' + escapeHtml_(tw.name) + ' (' + escapeHtml_(tw.group) + ')';
+    if (entries.length === 1) {
+      lines.push('🔁 <b>Preview</b>', 'Transfer <b>' + formatRp_(d.amount) + '</b>', '👛 ' + route);
+    } else {
+      const x = d.extra;
+      lines.push('🔁 <b>Preview</b> · linked entries',
+        '1. Transfer <b>' + formatRp_(entries[0].amount) + '</b> · ' + route,
+        '2. Expense <b>' + formatRp_(x.amount) + '</b> · ' + escapeHtml_(x.category) + how(x.categoryHow) +
+          ' · from ' + escapeHtml_(entries[1].wallet) +
+          (x.suggested ? ' <i>(default fee for ' + escapeHtml_(d.wallet) + ')</i>' : '') +
+          (x.kind === 'partial' && x.note ? ' · "' + escapeHtml_(x.note) + '"' : ''));
+    }
+    const deltas = walletDeltas_(entries);
+    lines.push(Object.keys(deltas).map(function (name) {
+      return escapeHtml_(name) + ' ' + formatRpSigned_(deltas[name]);
+    }).join(' | '));
   } else {
     lines.push((d.type === 'Income' ? '💵' : '🧾') + ' <b>Preview</b>',
       d.type + ' <b>' + formatRp_(d.amount) + '</b>',
-      '📂 ' + escapeHtml_(d.category) + ' <i>(' + (CATEGORY_HOW_LABEL[d.categoryHow] || 'you picked') + ')</i>',
+      '📂 ' + escapeHtml_(d.category) + how(d.categoryHow),
       '👛 ' + escapeHtml_(w.name) + ' → ' + escapeHtml_(w.group) +
         (d.walletHow === 'default' ? ' <i>(default for ' + escapeHtml_(d.category) + ')</i>' : ''));
   }
   lines.push('📅 ' + formatDate_(d.date));
   if (d.note) lines.push('📝 ' + escapeHtml_(d.note));
-  const warnings = previewChecks_(p, ctx, w);
+  if (d.readByAi) lines.push('🤖 <i>Read by AI — please check the details.</i>');
+  const warnings = previewChecks_(p, ctx, entries);
   if (warnings.length) lines.push('', warnings.join('\n'));
   lines.push('', footer);
   return lines.join('\n');
 }
 
-/** Large amount, possible duplicate, negative balance, future date. */
-function previewChecks_(p, ctx, wallet) {
+/** Large amount, possible duplicate, negative balance (per wallet), future date. */
+function previewChecks_(p, ctx, entries) {
   const d = p.d;
   const out = [];
   const large = getSettingInt_(SETTING.LARGE_AMOUNT);
@@ -295,25 +447,45 @@ function previewChecks_(p, ctx, wallet) {
     out.push('⚠️ Possible duplicate of ' + escapeHtml_(dup['trx id'] || 'an existing row') +
       ' (same type, amount and note). Save it again?');
   }
-  if (d.type !== 'Income' && wallet && wallet.balance - d.amount < 0) {
-    out.push('⚠️ ' + escapeHtml_(wallet.name) + ' would go negative (' + formatRp_(wallet.balance - d.amount) + ').');
-  }
+  const deltas = walletDeltas_(entries);
+  Object.keys(deltas).forEach(function (name) {
+    const w = findWallet_(ctx.wallets, name);
+    if (w && deltas[name] < 0 && w.balance + deltas[name] < 0) {
+      out.push('⚠️ ' + escapeHtml_(name) + ' would go negative (' + formatRp_(w.balance + deltas[name]) + ').');
+    }
+  });
   if (d.date > Date.now() + 60000) out.push('⚠️ This date is in the future.');
   return out;
 }
 
 function showEditMenu_(p, ctx) {
-  const rows = p.d.type === 'Transfer'
-    ? [[btn_(p, 'Amount', 'ef', 'amount'), btn_(p, 'From', 'ef', 'wallet'), btn_(p, 'To', 'ef', 'to')],
-       [btn_(p, 'Date', 'ef', 'date'), btn_(p, 'Note', 'ef', 'note'), btn_(p, 'Type', 'ef', 'type')]]
-    : [[btn_(p, 'Amount', 'ef', 'amount'), btn_(p, 'Category', 'ef', 'category'), btn_(p, 'Wallet', 'ef', 'wallet')],
-       [btn_(p, 'Date', 'ef', 'date'), btn_(p, 'Note', 'ef', 'note'), btn_(p, 'Type', 'ef', 'type')]];
+  const d = p.d;
+  let rows;
+  if (d.type === 'Transfer') {
+    rows = [[btn_(p, 'Amount', 'ef', 'amount'), btn_(p, 'From', 'ef', 'wallet'), btn_(p, 'To', 'ef', 'to')],
+      [btn_(p, 'Date', 'ef', 'date'), btn_(p, 'Note', 'ef', 'note'), btn_(p, 'Type', 'ef', 'type')]];
+    if (d.extra) {
+      rows.push([btn_(p, (d.extra.kind === 'fee' ? 'Fee' : 'Spent') + ' amount', 'ef', 'xamount'),
+        btn_(p, (d.extra.kind === 'fee' ? 'Fee' : 'Spent') + ' category', 'ef', 'xcategory'),
+        btn_(p, '🚫 Remove ' + (d.extra.kind === 'fee' ? 'fee' : 'spent part'), 'xr')]);
+      if (d.extra.kind === 'partial') {
+        const other = d.extra.from === 'source' ? d.toWallet : d.wallet;
+        rows.push([btn_(p, '🔄 Spent from ' + other + ' instead', 'pf', d.extra.from === 'source' ? 'dest' : 'source')]);
+      }
+    } else {
+      rows.push([btn_(p, '➕ Add fee', 'ef', 'xamount')]);
+    }
+  } else {
+    rows = [[btn_(p, 'Amount', 'ef', 'amount'), btn_(p, 'Category', 'ef', 'category'), btn_(p, 'Wallet', 'ef', 'wallet')],
+      [btn_(p, 'Date', 'ef', 'date'), btn_(p, 'Note', 'ef', 'note'), btn_(p, 'Type', 'ef', 'type')]];
+  }
   rows.push([btn_(p, '⬅️ Back', 'back'), btn_(p, '❌ Cancel entry', 'n')]);
   showStep_(p, buildPreviewText_(p, ctx, '✏️ What do you want to change?'), rows);
 }
 
 const EDIT_PROMPTS = {
   amount: 'Send the new amount, e.g. <code>75rb</code>.',
+  xamount: 'Send the fee / spent amount, e.g. <code>2.5rb</code>.',
   date: 'Send the new date, e.g. <code>kemarin</code>, <code>10</code> (the last 10th), <code>20/09</code> or <code>5 okt</code>.',
   note: 'Send the new note.'
 };
@@ -342,6 +514,30 @@ function trxCallback_(p, action, arg, user) {
       d.unknownTag = null;
       if (d.walletHow === 'default') { d.wallet = null; d.walletHow = ''; } // re-apply the new category's default
       break;
+    case 'xc': // category of the fee / spent part
+      if (d.extra) { d.extra.category = p.opts[Number(arg)]; d.extra.categoryHow = 'chosen'; }
+      break;
+    case 'xr': // remove the fee / spent part
+      d.extra = null;
+      break;
+    case 'pf': // partial expense spent from the source or the destination
+      if (d.extra) d.extra.from = arg === 'dest' ? 'dest' : 'source';
+      break;
+    case 'rx': // answer to "sampai R": what was the difference?
+      if (d.extra && d.extra.kind === 'received') {
+        const received = d.extra.amount;
+        const diff = d.amount - received;
+        if (arg === 'fee') {
+          d.amount = received; // fee on top of what actually moved
+          d.extra = newFeeExtra_(diff, ctx);
+        } else if (arg === 'spent') {
+          d.extra = { kind: 'partial', amount: diff, from: 'source', note: '', category: null, categoryHow: '' };
+        } else {
+          d.amount = received; // typo: the transfer was the received amount
+          d.extra = null;
+        }
+      }
+      break;
     case 'dok':
       d.dateNeedsConfirm = false;
       break;
@@ -358,6 +554,7 @@ function trxCallback_(p, action, arg, user) {
           [[btn_(p, '⬅️ Back', 'back'), btn_(p, '❌ Cancel entry', 'n')]]);
       }
       if (arg === 'category') return askCategory_(p, ctx);
+      if (arg === 'xcategory') return askCategory_(p, ctx, 'extra');
       if (arg === 'wallet') return askWallet_(p, ctx, d.type === 'Transfer' ? 'from' : 'wallet');
       if (arg === 'to') return askWallet_(p, ctx, 'to');
       if (arg === 'type') {
@@ -387,6 +584,7 @@ function changeType_(p, type, ctx) {
     return;
   }
   d.toWallet = null;
+  d.extra = null; // fees / spent parts only exist on transfers
   const cat = ctx.categories.filter(function (c) { return c.name === d.category; })[0];
   if (!cat || cat.type !== type) {
     d.category = null;
@@ -415,6 +613,15 @@ function handlePendingText_(p, message) {
       d.amount = a.value;
       d.amountOptions = null;
     }
+  } else if (p.awaitText === 'xamount') {
+    const a = parseAmountToken_(text);
+    if (a === null || (a.ambiguous && a.ambiguous.reason !== 'small')) {
+      sendMessage(p.chatId, "I couldn't read that amount. Send just the amount, e.g. <code>2.5rb</code>, or tap Back.");
+      return;
+    }
+    if (d.extra) d.extra.amount = a.value;
+    else d.extra = newFeeExtra_(a.value, loadCtx_()); // "Add fee"
+    d.extra.suggested = false;
   } else if (p.awaitText === 'date') {
     const date = parseDateOnly_(text, new Date());
     if (date === null) {
@@ -436,17 +643,23 @@ function saveTrx_(p, ctx, user) {
   const d = p.d;
   if (isMonthClosed_(ctx.ss, d.date)) return advanceTrx_(p, ctx);
   const loggedBy = user && user.name ? user.name : p.chatId;
-  const id = withScriptLock_(function () {
+  const entries = entriesOf_(d);
+  const saved = withScriptLock_(function () {
     const current = getPending_(p.chatId);
     if (!current || current.pid !== p.pid) return null; // double tap: already saved
-    const newId = writeTransaction_(ctx.ss, d, loggedBy);
+    const sheet = ctx.ss.getSheetByName(TAB.TRANSACTIONS);
+    const linkId = entries.length > 1 ? nextId_(sheet, 'Link ID', 'LNK') : '';
+    const ids = entries.map(function (e) { return writeTransaction_(ctx.ss, e, loggedBy, linkId); });
     clearPending_(p.chatId);
-    return newId;
+    return { ids: ids, linkId: linkId };
   });
-  if (id === null) return;
+  if (saved === null) return;
 
-  editMessage(p.chatId, p.msgId, '✅ Saved as <b>' + id + '</b>.');
-  afterSave_(ctx.ss, p.chatId, [{ type: d.type, category: d.category, date: d.date }]);
+  editMessage(p.chatId, p.msgId, '✅ Saved as <b>' + saved.ids.join('</b> + <b>') + '</b>' +
+    (saved.linkId ? ' (' + saved.linkId + ')' : '') + '.');
+  afterSave_(ctx.ss, p.chatId, entries);
+  const x = d.extra;
+  if (x && x.kind === 'partial' && x.categoryHow === 'chosen' && x.note) offerKeyword_(p.chatId, x.category, x.note);
 
   if (d.type !== 'Transfer' && d.categoryHow === 'chosen' && d.category !== p.orig) {
     offerKeyword_(p.chatId, d.category, d.note);
@@ -548,9 +761,10 @@ function startUndo_(chatId, user) {
   const p = newPending_(chatId, 'undo', {
     ids: group.map(function (r) { return String(r['trx id']).trim(); }).filter(String)
   });
-  showStep_(p, '↩️ Delete your last entry' + (group.length > 1 ? ' (a linked group of ' + group.length + ')' : '') +
-    '?\n' + group.map(describeRow_).join('\n'),
-    [[btn_(p, '🗑️ Delete', 'y'), btn_(p, '❌ Cancel', 'n')]]);
+  const linked = group.length > 1;
+  showStep_(p, '↩️ Delete your last entry' + (linked ? ' — it is a linked group of ' + group.length +
+    ' entries, which are deleted together' : '') + '?\n' + group.map(describeRow_).join('\n'),
+    [[btn_(p, linked ? '🗑️ Delete all ' + group.length : '🗑️ Delete', 'y'), btn_(p, '❌ Cancel', 'n')]]);
 }
 
 function undoCallback_(p, action) {
@@ -681,6 +895,7 @@ function handleCallback_(cq) {
   else if (p.kind === 'undo') undoCallback_(p, action);
   else if (p.kind === 'wadd') walletAddCallback_(p, action, arg);
   else if (p.kind === 'cadd') categoryAddCallback_(p, action, arg);
+  else if (p.kind === 'adj') adjustCallback_(p, action, arg, getUserByChatId_(chatId));
 }
 
 /** Friendly reply for a message the parser couldn't use. */
@@ -705,9 +920,12 @@ function parseErrorText_(r) {
       return 'From and To are both ' + escapeHtml_(r.wallet) + '. A transfer needs two different wallets.';
     case 'investment_wallet':
       return escapeHtml_(r.wallet) + ' is an investment wallet. Investment purchases arrive in a later update.';
-    case 'transfer_extras':
-      return 'Transfers with a fee, a partial expense or a received amount arrive in the next update. ' +
-        'For now, log them separately:\n• <code>transfer 1jt BCA ke GoPay</code>\n• <code>2.5rb admin BCA</code>';
+    case 'transfer_two_extras':
+      return 'A transfer can have one extra part: a fee, a received amount, or money spent. Please send the ' +
+        'others separately, e.g.\n• <code>transfer 1jt BCA ke GoPay admin 2.5rb</code>\n• <code>20rb makan GoPay</code>';
+    case 'extra_unclear':
+      return "I couldn't read the fee / spent amount. Write it like <code>admin 2.5rb</code> or " +
+        '<code>200rb untuk makan</code>.';
     default:
       return "Sorry, I couldn't understand that. Type /help for examples.";
   }

@@ -76,6 +76,8 @@ const SETTING = {
   SALDO_PASSWORD: 'Password for /saldo',
   BUDGET_AUTO_DELETE: 'Budget auto-delete',
   BUDGET_PASSWORD: 'Password for /budget',
+  ADJUST_PASSWORD: 'Password for /adjust',
+  ADJUST_AUTO_DELETE: 'Adjust auto-delete',
   SPENDING_GROUPS: 'Spending Wallet Groups',
   INVESTMENT_GROUPS: 'Investment Wallet Groups'
 };
@@ -96,6 +98,8 @@ const SETTING_ROWS = [
   [SETTING.SALDO_PASSWORD, 'Yes', 'Yes = /saldo asks for the password. No = /saldo shows balances right away (still hidden until tapped, and deleted after 60s).'],
   [SETTING.BUDGET_AUTO_DELETE, 'Yes', 'Yes = the budget message after each save is deleted at the end of the day (23:59), and the /budget reply after 60s. No = both stay.'],
   [SETTING.BUDGET_PASSWORD, 'No', 'Yes = /budget asks for the password (same as /saldo). No = /budget shows right away.'],
+  [SETTING.ADJUST_PASSWORD, 'Yes', 'Yes = /adjust asks for the password first (it shows balances). No = it starts right away.'],
+  [SETTING.ADJUST_AUTO_DELETE, 'Yes', 'Yes = /adjust messages are deleted 60s after you finish (or when an unanswered preview expires). No = they stay.'],
   [SETTING.SPENDING_GROUPS, 'Spending', 'Wallet groups offered as buttons for expenses (comma-separated).'],
   [SETTING.INVESTMENT_GROUPS, 'Investment', 'Wallet groups that hold investment money: not usable for expenses/income, hidden in /saldo (shown in /saldo all). Transfers are fine.'],
   ['Daily Reminder Time', '08:00', 'Hour for the daily hutang/piutang reminder (HH:MM).'],
@@ -113,6 +117,9 @@ const SALDO_DELETE_SECONDS = 60;
 
 /** The /budget reply is deleted this many seconds after it's sent (when Budget auto-delete = Yes). */
 const BUDGET_REPLY_DELETE_SECONDS = 60;
+
+/** /adjust messages are deleted this many seconds after the flow ends (when Adjust auto-delete = Yes). */
+const ADJUST_DELETE_SECONDS = 60;
 
 /** Settings rows from earlier versions that are no longer used; upgradeSettings() removes them. */
 const OBSOLETE_SETTINGS = ['Saldo auto-delete (seconds)', 'Budget auto-delete (seconds)'];

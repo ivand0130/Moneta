@@ -190,11 +190,17 @@ function writeDeleteQueue_(queue) {
   CacheService.getScriptCache().put(DELETE_QUEUE_CACHE_KEY, json, 21600);
 }
 
-/** Queues a message to be deleted after `seconds` (capped at 47 hours). */
+/**
+ * Queues a message to be deleted after `seconds` (capped at 47 hours). If the
+ * message is already queued, its time is replaced (e.g. an /adjust preview
+ * queued for "when it expires" moves to "60s after you finish").
+ */
 function scheduleDelete_(chatId, messageId, seconds) {
   const delay = Math.min(Math.max(0, Number(seconds) || 0), MAX_DELETE_DELAY_SECONDS);
   withScriptLock_(function () {
-    const queue = readDeleteQueue_();
+    const queue = readDeleteQueue_().filter(function (item) {
+      return !(item.c === String(chatId) && item.m === messageId);
+    });
     queue.push({ c: String(chatId), m: messageId, at: Date.now() + delay * 1000 });
     writeDeleteQueue_(queue);
   });

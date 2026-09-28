@@ -113,6 +113,13 @@ The bot must support these inputs:
 - When I correct a category, offer to save the keyword so the same note is
   mapped automatically next time
 - Categories are editable in the Categories tab (name, type, budget, keywords)
+- AI parsing fallback (built in Phase 3): when the rules can't find a clear
+  amount (none, or several) and the message looks like it mentions money
+  (digits or number words like "ribu", "juta", "goceng"), Gemini reads the
+  whole message (JSON only). Every field it returns is checked against the
+  real wallets and categories (unknown → asked), and the result is always a
+  normal preview marked "🤖 Read by AI". "hello" never calls Gemini.
+  Transfers with fees stay with the rules
 - Investments have their own categories (see Section 8)
 
 ## 6. Multiple Wallets & Grouping
@@ -184,6 +191,37 @@ The bot must support these inputs:
     difference (Rp2.500) and ask whether it's a fee
 - Saved favorites can include a default fee (e.g. top-up GoPay always Rp1.000)
 - /undo on any linked entry asks whether to remove the whole linked group
+
+Decisions made in Phase 3 (owner):
+- "admin X" and "dipotong X" mean the same: the fee is paid ON TOP by the
+  source wallet. Transfer row = the full amount; Expense row = the fee, from
+  the source (BCA −1.002.500, GoPay +1.000.000)
+- "sampai R" (received less): the bot asks what the difference was —
+  Fee → Transfer R + fee from the source; Spent on something → Transfer R +
+  expense from the source (category asked); Typo → Transfer R only.
+  Received more than sent → "was the transfer actually R?"
+- Partial spending ("200rb untuk makan") always asks: spent from the source
+  (Transfer = amount − spent) or from the destination after arriving
+  (Transfer = full amount, expense from the destination)
+- The Wallets tab "Default Transfer Fee" of the SOURCE wallet is suggested
+  automatically on a plain transfer (preview line "default fee for BCA",
+  with a [No fee] button). Edit can add, change or remove a fee
+- One extra part per transfer (fee OR received amount OR spent part);
+  several → the bot asks to send them separately
+- /undo on a linked group deletes all of its entries together (deleting
+  only one would leave a fee without its transfer)
+
+Adjust balance, decisions made in Phase 3 (owner):
+- "Password for /adjust" (default Yes) and "Adjust auto-delete" (default
+  Yes) in Settings. The preview hides amounts with the spoiler helper; with
+  auto-delete on, the /adjust message disappears 60 seconds after the flow
+  ends, or when an unanswered preview expires (10 minutes)
+- A balance of 0 or a negative balance is allowed; an optional date and note
+  can follow ("/adjust BCA 10.200.000 kemarin salah catat")
+- Investment category wallets (Wallet Type = Investment) can't be adjusted —
+  their value comes from the Investments tab
+- The recorded balance is checked again when Yes is tapped; if it changed,
+  the preview is shown again
 
 ## 7. Hutang/Piutang Logic
 - Each hutang/piutang gets a unique ID (e.g. PTG-001, HTG-001)
@@ -633,7 +671,8 @@ Tab 7: Settings: a Users table (chat ID, display name, GoPay name) for me
 and my partner, main sheet ID, archive folder ID, receipts folder ID, reminder
 times, thresholds (large amount, duplicate window, reminder days), timezone,
 AI on/off, Gemini model, Hide amounts (yes/no), Password (numbers only),
-Password for /saldo (yes/no), Password for /budget (yes/no), Spending
+Password for /saldo (yes/no), Password for /budget (yes/no), Password for
+/adjust (yes/no), Adjust auto-delete (yes/no), Spending
 Wallet Groups, Investment Wallet Groups, Budget auto-delete (yes/no).
 Helper lists: Owners, Investment Categories, Wallet Groups.
 (Bot token, Gemini key and folder/sheet IDs are stored in Script

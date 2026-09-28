@@ -252,8 +252,37 @@ function testParser() {
     ['top up gopay 100rb dari bca', { type: 'Transfer', wallet: 'BCA', toWallet: 'GoPay' }],
     ['top up gopay 100rb', { type: 'Transfer', wallet: null, toWallet: 'GoPay' }],
     ['transfer 1jt BCA', { type: 'Transfer', wallet: 'BCA', toWallet: null }],
-    ['transfer 1jt BCA ke GoPay admin 2.5rb', { ok: false, error: 'transfer_extras' }],
-    ['transfer 1jt BCA ke IPOT, sampai 997.500', { ok: false, error: 'transfer_extras' }],
+    // Phase 3: transfers with a fee, a received amount or a partial expense
+    ['transfer 1jt BCA ke GoPay admin 2.5rb', { ok: true, type: 'Transfer', amount: 1000000, wallet: 'BCA',
+      toWallet: 'GoPay', extra: { kind: 'fee', amount: 2500, note: '', category: 'Admin & Bank Fees', categoryHow: 'keyword' } }],
+    ['transfer 1jt BCA ke IPOT, sampai 997.500', { ok: true, amount: 1000000, toWallet: 'IPOT (Saham)',
+      extra: { kind: 'received', amount: 997500, note: '', category: null, categoryHow: '' } }],
+    ['Transfer BCA ke IPOT 1jt dipotong admin 15k', { amount: 1000000, extra: { kind: 'fee', amount: 15000, note: '',
+      category: 'Admin & Bank Fees', categoryHow: 'keyword' } }],
+    ['transfer 1jt BCA ke GoPay biaya transfer 6.5rb', { amount: 1000000, extra: { kind: 'fee', amount: 6500, note: '',
+      category: 'Admin & Bank Fees', categoryHow: 'keyword' } }],
+    ['transfer 1jt BCA ke GoPay, 2.5rb admin', { amount: 1000000, extra: { kind: 'fee', amount: 2500, note: '',
+      category: 'Admin & Bank Fees', categoryHow: 'keyword' } }],
+    ['transfer 1jt admin 2.5rb BCA ke GoPay', { amount: 1000000, wallet: 'BCA', extra: { kind: 'fee', amount: 2500,
+      note: '', category: 'Admin & Bank Fees', categoryHow: 'keyword' } }],
+    ['top up gopay 100rb dari BCA fee 1rb', { toWallet: 'GoPay', amount: 100000, extra: { kind: 'fee', amount: 1000,
+      note: '', category: 'Admin & Bank Fees', categoryHow: 'keyword' } }],
+    ['transfer BCA ke GoPay 100rb admin 500', { amount: 100000, extra: { kind: 'fee', amount: 500, note: '',
+      category: 'Admin & Bank Fees', categoryHow: 'keyword' } }],
+    ['Transfer BCA ke IPOT 1jt, 500k untuk makan siang', { amount: 1000000, note: '', extra: { kind: 'partial',
+      amount: 500000, note: 'makan siang', category: 'Food', categoryHow: 'keyword' } }],
+    ['Transfer BCA ke GoPay 100k, 20k untuk beli barang', { amount: 100000, extra: { kind: 'partial', amount: 20000,
+      note: 'beli barang', category: null, categoryHow: '' } }],
+    ['transfer 1jt BCA ke IPOT, 200rb dipakai bayar makan', { amount: 1000000, extra: { kind: 'partial', amount: 200000,
+      note: 'bayar makan', category: 'Food', categoryHow: 'keyword' } }],
+    ['transfer 1jt BCA ke GoPay 50rb buat obat #health', { extra: { kind: 'partial', amount: 50000, note: 'obat',
+      category: 'Health', categoryHow: 'tag' } }],
+    ['transfer 1jt BCA ke GoPay diterima 999.000', { extra: { kind: 'received', amount: 999000, note: '', category: null,
+      categoryHow: '' } }],
+    ['transfer 1jt untuk tabungan BCA ke Jago', { ok: true, amount: 1000000, extra: null, note: 'untuk tabungan' }],
+    ['transfer 1jt BCA ke Jago', { extra: null }],
+    ['transfer 1jt BCA ke GoPay admin 2.5rb, 20rb untuk makan', { ok: false, error: 'transfer_two_extras' }],
+    ['transfer 1jt BCA ke GoPay 20rb 30rb', { ok: false, error: 'multiple_amounts' }],
     ['transfer 1jt BCA ke BCA', { ok: false, error: 'same_wallet' }],
     // Reported cases: yesterday spellings, "tgl 10", investment wallets
     ['25rb parkir kmrn', { date: '2026-9-24', note: 'parkir' }],
@@ -442,4 +471,85 @@ function testBudgetCommand() {
   t('no budgets at all', /No budgets set yet/.test(buildBudgetReport_([c('Food', 'Expense', 0)], rows, now, '', false).text), true);
   t('hidden amounts', (buildBudgetReport_(cats, rows, now, 'transport', true).text.match(/<tg-spoiler>/g) || []).length, 3);
   console.log((pass === 15 ? 'PASS' : 'FAIL') + ': testBudgetCommand ' + pass + '/15');
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 tests
+// ---------------------------------------------------------------------------
+
+/** /adjust reading (no sheet needed). */
+function testAdjust() {
+  const ctx = testCtx_();
+  let pass = 0;
+  const cases = [
+    ['BCA 10.200.000', { ok: true, wallet: 'BCA', actual: 10200000, note: '' }],
+    ['bca 10,2jt', { ok: true, wallet: 'BCA', actual: 10200000 }],
+    ['GoPay 0', { ok: true, wallet: 'GoPay', actual: 0 }],
+    ['Cash -50.000', { ok: true, wallet: 'Cash', actual: -50000 }],
+    ['BCA 10.200.000 kemarin salah catat', { wallet: 'BCA', actual: 10200000, date: '2026-9-24', note: 'salah catat' }],
+    ['BCA tgl 10 5jt', { actual: 5000000, date: '2026-9-10', dateNeedsConfirm: true }],
+    ['IPOT 500rb', { ok: true, wallet: 'IPOT (Saham)', actual: 500000 }],
+    ['Mandiri 1jt', { ok: true, wallet: null, walletChoices: ['Mandiri (Payroll)', 'Mandiri (Joint)'] }],
+    ['Saham 5jt', { ok: false, error: 'adjust_investment' }],
+    ['10.200.000', { ok: false, error: 'adjust_no_wallet' }],
+    ['BCA', { ok: false, error: 'no_amount' }],
+    ['BCA 1jt 2jt', { ok: false, error: 'multiple_amounts' }],
+    ['BCA GoPay 1jt', { ok: false, error: 'two_wallets' }],
+    ['BCA 50', { ok: true, actual: null, amountOptions: [50000, 50] }],
+    ['', { ok: false, error: 'adjust_usage' }]
+  ];
+  cases.forEach(function (c) { if (checkCase_('adjust: ' + c[0], parseAdjust_(c[0], ctx), c[1])) pass++; });
+  console.log((pass === cases.length ? 'PASS' : 'FAIL') + ': testAdjust ' + pass + '/' + cases.length);
+}
+
+/** Linked entries and wallet effects for transfers with a fee / spent part (no sheet needed). */
+function testLinkedEntries() {
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  const base = { type: 'Transfer', amount: 1000000, wallet: 'BCA', toWallet: 'GoPay', note: '', date: 0 };
+  const withExtra = function (x) { return Object.assign({}, base, { extra: x }); };
+  const fee = entriesOf_(withExtra({ kind: 'fee', amount: 2500, category: 'Admin & Bank Fees', categoryHow: 'keyword' }));
+  t('fee: 2 rows', fee.length, 2);
+  t('fee: transfer keeps the full amount', fee[0].amount, 1000000);
+  t('fee: expense from the source', fee[1].wallet + ' ' + fee[1].amount, 'BCA 2500');
+  t('fee: BCA pays on top', JSON.stringify(walletDeltas_(fee)), JSON.stringify({ BCA: -1002500, GoPay: 1000000 }));
+  const src = entriesOf_(withExtra({ kind: 'partial', amount: 200000, from: 'source', category: 'Food', note: 'makan' }));
+  t('partial from source: transfer shrinks', src[0].amount, 800000);
+  t('partial from source: effects', JSON.stringify(walletDeltas_(src)), JSON.stringify({ BCA: -1000000, GoPay: 800000 }));
+  const dst = entriesOf_(withExtra({ kind: 'partial', amount: 200000, from: 'dest', category: 'Food', note: 'makan' }));
+  t('partial from destination: transfer full, expense from GoPay', dst[0].amount + ' ' + dst[1].wallet, '1000000 GoPay');
+  t('partial from destination: effects', JSON.stringify(walletDeltas_(dst)), JSON.stringify({ BCA: -1000000, GoPay: 800000 }));
+  t('no extra: 1 row', entriesOf_(base).length, 1);
+  t('received (not yet answered): 1 row', entriesOf_(withExtra({ kind: 'received', amount: 997500 })).length, 1);
+  t('expense row counts as expense', countsAsExpense_(fee[1]), true);
+  t('transfer row does not', countsAsExpense_(fee[0]), false);
+  console.log((pass === 12 ? 'PASS' : 'FAIL') + ': testLinkedEntries ' + pass + '/12');
+}
+
+/** AI answers are checked against the real wallets/categories (no Gemini call). */
+function testAiParse() {
+  const ctx = testCtx_();
+  const now = ctx.now;
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, actual || { ok: null }, expected)) pass++; };
+  t('good answer', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: 20000, wallet: 'gopay',
+    date: '2026-09-24', note: 'kopi', category: 'Food' }, ctx, now),
+    { ok: true, type: 'Expense', amount: 20000, wallet: 'GoPay', date: '2026-9-24', category: 'Food', categoryHow: 'ai', readByAi: true });
+  t('not a transaction', validateAiTransaction_({ is_transaction: false }, ctx, now), { ok: null });
+  t('bad type', validateAiTransaction_({ is_transaction: true, type: 'Loan', amount: 5 }, ctx, now), { ok: null });
+  t('no amount', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: 0 }, ctx, now), { ok: null });
+  t('amount as text', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: '15.000' }, ctx, now), { amount: 15000 });
+  t('unknown wallet dropped', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: 5000, wallet: 'Dana' }, ctx, now),
+    { wallet: null });
+  t('investment wallet dropped for expense', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: 5000,
+    wallet: 'IPOT (Saham)' }, ctx, now), { wallet: null });
+  t('unknown category → keyword from note', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: 5000,
+    category: 'Snacks', note: 'kopi susu' }, ctx, now), { category: 'Food', categoryHow: 'keyword' });
+  t('future date → today', validateAiTransaction_({ is_transaction: true, type: 'Expense', amount: 5000, date: '2027-01-01' },
+    ctx, now), { date: '2026-9-25' });
+  t('transfer to the same wallet dropped', validateAiTransaction_({ is_transaction: true, type: 'Transfer', amount: 5000,
+    wallet: 'BCA', to_wallet: 'BCA' }, ctx, now), { wallet: 'BCA', toWallet: null });
+  t('looksLikeMoney_ words', looksLikeMoney_('kopi dua puluh ribu') && looksLikeMoney_('goceng parkir'), true);
+  t('looksLikeMoney_ greeting', looksLikeMoney_('hello bot'), false);
+  console.log((pass === 12 ? 'PASS' : 'FAIL') + ': testAiParse ' + pass + '/12');
 }

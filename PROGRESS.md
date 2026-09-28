@@ -3,17 +3,13 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 2B — DONE (2026-09-28). All editor tests and the Telegram checklist
-passed.
-Phase 2 — DONE (2026-09-28).
-Next: Phase 3 — Adjust balance and transfers with fees/partial
-expense.
+Phase 3 — code pushed (2026-09-28), waiting on upgradeSheets + deploy +
+Telegram test.
+Phase 2B — DONE (2026-09-28). Phase 2 — DONE (2026-09-28).
+Next after 3: Phase 4 — Hutang / piutang and split bill (text).
 
 ## Deferred (agreed, must be picked up later — do not drop)
-- AI natural-language PARSING fallback: when the rule-based parser can't read
-  a message, ask Gemini to extract type/amount/wallet/date/note (JSON only),
-  then show the normal preview. Phase 2 uses Gemini for category suggestion
-  only. Pick up in Phase 3 or later, before the OCR phase (it shares AI.gs).
+(none open. The AI parsing fallback was built in Phase 3.)
 
 ## Spec change 2026-09-28: receipts (SPEC 24) + budgeting (SPEC 25)
 Decisions (owner): GoPay flow only if issuer = GoPay AND participant list;

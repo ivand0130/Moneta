@@ -128,7 +128,7 @@ function handlePasswordInput_(message, state) {
   clearPasswordState_(chatId);
   const extra = { filter: state.filter, salt: state.salt, hash: state.hash };
 
-  if (state.purpose === 'saldo' || state.purpose === 'budget' || state.purpose === 'cp_old') {
+  if (['saldo', 'budget', 'adjust', 'cp_old'].indexOf(state.purpose) !== -1) {
     const current = readSheetPassword_();
     if (current.error) {
       sendMessage(chatId, current.error);
@@ -150,6 +150,8 @@ function handlePasswordInput_(message, state) {
       showSaldo_(chatId, state.filter, current.value === DEFAULT_PASSWORD);
     } else if (state.purpose === 'budget') {
       showBudget_(chatId, state.filter, current.value === DEFAULT_PASSWORD);
+    } else if (state.purpose === 'adjust') {
+      beginAdjust_(chatId, state.filter);
     } else {
       askPassword_(chatId, 'cp_new', {}, '🔑 Send the <b>new</b> password (numbers only, at least 4 digits).');
     }

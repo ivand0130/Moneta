@@ -35,8 +35,15 @@ const MONTH_WORDS = {
 
 const TRANSFER_WORDS = ['transfer', 'tf', 'trf', 'pindah', 'pindahkan', 'topup', 'top-up'];
 const INCOME_WORDS = ['terima', 'diterima', 'masuk', 'pemasukan', 'income', 'received'];
-// Words that mean a transfer has a fee / partial expense / received amount (Phase 3).
-const TRANSFER_EXTRA_WORDS = ['admin', 'fee', 'biaya', 'dipotong', 'potong', 'potongan', 'sampai', 'diterima', 'untuk', 'dipakai'];
+// Words that attach an extra amount to a transfer (SPEC Section 6):
+//   fee:      "admin 2.5rb", "dipotong admin 15k", "biaya transfer 6.5rb", "2.5rb admin"
+//   received: "sampai 997.500", "diterima 997.500"
+//   partial:  "200rb untuk makan", "20k buat beli barang", "200rb dipakai bayar makan"
+const FEE_WORDS = ['admin', 'adm', 'fee', 'biaya', 'dipotong', 'potong', 'potongan'];
+const RECEIVED_WORDS = ['sampai', 'sampe', 'nyampe', 'diterima', 'received'];
+const PARTIAL_WORDS = ['untuk', 'utk', 'buat', 'dipakai', 'dipake', 'for'];
+// SPEC Section 6: the default category for transfer fees.
+const DEFAULT_FEE_CATEGORY = 'Admin & Bank Fees';
 // Small words that link a wallet to the sentence ("pakai BCA", "ke GoPay").
 const WALLET_CONNECTORS = ['dari', 'ke', 'pakai', 'pake', 'via', 'lewat', 'from', 'to', 'using', 'dengan', 'dgn', '->', '→'];
 const DEST_CONNECTORS = ['ke', 'to', '->', '→'];
@@ -349,7 +356,16 @@ function parseTransaction_(text, ctx) {
     mentions[k] = Object.assign({}, mentions[k], { wallets: kept });
   }
 
-  const amounts = extractAmounts_(tokens);
+  let amounts = extractAmounts_(tokens);
+
+  // Transfers may carry ONE extra amount: a fee, a received amount, or a partial expense.
+  let extra = null;
+  if (isTransfer) {
+    const found = extractTransferExtra_(tokens, amounts, ctx, tag);
+    if (found.error) return { ok: false, error: found.error };
+    extra = found.extra;
+    amounts = amounts.filter(function (a) { return !a.tokens.some(function (k) { return tokens[k].used; }); });
+  }
 
   // A mention is either one wallet (a name) or several to pick from (a list of names).
   const pick = function (m) { return m.wallets.length === 1 ? m.wallets[0].name : null; };
@@ -357,10 +373,6 @@ function parseTransaction_(text, ctx) {
   let from = null;
   let to = null;
   if (isTransfer) {
-    const extras = tokens.some(function (t) { return !t.used && TRANSFER_EXTRA_WORDS.indexOf(t.clean) !== -1; });
-    if (extras || amounts.filter(function (a) { return a.strong; }).length > 1) {
-      return { ok: false, error: 'transfer_extras' };
-    }
     if (mentions.length > 2) {
       return { ok: false, error: 'too_many_wallets', wallets: mentions.map(mentionLabel_) };
     }
@@ -446,8 +458,80 @@ function parseTransaction_(text, ctx) {
     category: category,
     categoryHow: categoryHow,
     unknownTag: unknownTag,
-    note: note
+    note: note,
+    extra: extra
   };
+}
+
+/**
+ * Finds the one extra amount of a transfer and marks its words used.
+ * Returns { extra: null | { kind, amount, note, category, categoryHow } } or
+ * { error: 'transfer_two_extras' | 'extra_unclear' }.
+ *   kind 'fee'      — "admin 2.5rb" / "dipotong admin 15k" (same meaning: paid on top by the source)
+ *   kind 'received' — "sampai 997.500" (the bot asks what the difference was)
+ *   kind 'partial'  — "200rb untuk makan" (the bot asks: spent from source or destination?)
+ */
+function extractTransferExtra_(tokens, amounts, ctx, tag) {
+  const isWord = function (k, list) { return tokens[k] && !tokens[k].used && list.indexOf(tokens[k].clean) !== -1; };
+  const isTransferWord = function (k) { return tokens[k] && TRANSFER_WORDS.indexOf(tokens[k].clean) !== -1; };
+  // An extra needs a main amount too ("transfer 1jt untuk tabungan" has no extra).
+  if (amounts.length < 2) return { extra: null };
+  const starts = amounts.map(function (a) { return a.tokens[0]; });
+  const found = [];
+  amounts.forEach(function (a) {
+    const first = a.tokens[0];
+    const last = a.tokens[a.tokens.length - 1];
+    // Fee words right before the amount ("dipotong admin 15k", "biaya transfer 6.5rb") or right after ("2.5rb admin").
+    const before = [];
+    for (let k = first - 1; k >= 0; k--) {
+      if (isWord(k, FEE_WORDS)) before.push(k);
+      else if (isTransferWord(k) && before.length === 0) continue;
+      else break;
+    }
+    // A fee word followed by another amount belongs to that amount ("1jt admin 2.5rb").
+    let runEnd = last + 1;
+    while (isWord(runEnd, FEE_WORDS)) runEnd++;
+    const feeAfter = runEnd > last + 1 && starts.indexOf(runEnd) === -1;
+    if (before.length || feeAfter) {
+      const words = before.length ? before : [last + 1];
+      found.push({ a: a, kind: 'fee', words: words, note: words.slice().sort(function (x, y) { return x - y; }).map(function (k) { return tokens[k].raw; }).join(' ') });
+    } else if (isWord(first - 1, RECEIVED_WORDS)) {
+      found.push({ a: a, kind: 'received', words: [first - 1], note: '' });
+    } else if (isWord(last + 1, PARTIAL_WORDS)) {
+      // Everything after "untuk" is what the money was spent on.
+      const words = [];
+      for (let k = last + 1; k < tokens.length; k++) if (!tokens[k].used) words.push(k);
+      found.push({ a: a, kind: 'partial', words: words,
+        note: words.slice(1).map(function (k) { return tokens[k].raw; }).join(' ').replace(/[\s,.;:-]+$/, '') });
+    }
+  });
+  if (found.length === 0) return { extra: null };
+  if (found.length > 1) return { error: 'transfer_two_extras' };
+
+  const f = found[0];
+  // A small bare number next to a fee word is taken literally ("admin 500" = Rp500).
+  let value = f.a.value;
+  if (f.a.ambiguous && f.a.ambiguous.reason !== 'small') return { error: 'extra_unclear' };
+  f.a.tokens.concat(f.words).forEach(function (k) { tokens[k].used = true; });
+
+  const expenseOnly = ['Expense'];
+  let category = null;
+  let categoryHow = '';
+  if (f.kind === 'partial' && tag !== null) {
+    const c = findCategoryByTag_(tag, ctx.categories, expenseOnly);
+    if (c) { category = c.name; categoryHow = 'tag'; }
+  }
+  if (category === null && f.kind !== 'received') {
+    const k = matchKeyword_(f.note, ctx.categories, expenseOnly);
+    if (k) { category = k.category; categoryHow = 'keyword'; }
+  }
+  if (category === null && f.kind === 'fee') {
+    // SPEC Section 6: fees default to "Admin & Bank Fees" (if that category exists).
+    const c = ctx.categories.filter(function (x) { return x.type === 'Expense' && x.name === DEFAULT_FEE_CATEGORY; })[0];
+    if (c) { category = c.name; categoryHow = 'keyword'; }
+  }
+  return { extra: { kind: f.kind, amount: value, note: f.kind === 'partial' ? f.note : '', category: category,
+    categoryHow: categoryHow } };
 }
 
 /**
@@ -464,4 +548,75 @@ function parseDateOnly_(text, now) {
   const result = extractDate_(tokens, now);
   const leftover = tokens.some(function (t) { return !t.used; });
   return result.date && !leftover ? result.date : null;
+}
+
+/**
+ * Reads "/adjust BCA 10.200.000 [date] [note]" (the text after /adjust).
+ * Returns { ok: true, wallet | walletChoices, actual | amountOptions, date,
+ * dateNeedsConfirm, dateText, note } or { ok: false, error } with errors
+ * adjust_usage, adjust_no_wallet, adjust_investment, two_wallets,
+ * no_amount, multiple_amounts, invalid_date, multiple_dates.
+ * A balance of 0 and negative balances ("-50.000") are allowed.
+ */
+function parseAdjust_(text, ctx) {
+  const now = ctx.now || new Date();
+  const tokens = String(text || '').trim().split(/\s+/).filter(String).map(function (raw) {
+    return { raw: raw, clean: cleanToken_(raw), used: false };
+  });
+  if (tokens.length === 0) return { ok: false, error: 'adjust_usage' };
+
+  const dateResult = extractDate_(tokens, now);
+  if (dateResult.error) return { ok: false, error: dateResult.error, text: dateResult.text };
+
+  const all = extractWallets_(tokens, ctx.wallets);
+  const mentions = all.filter(function (f, i) {
+    return all.findIndex(function (g) { return mentionKey_(g) === mentionKey_(f); }) === i;
+  });
+  if (mentions.length === 0) return { ok: false, error: 'adjust_no_wallet' };
+  if (mentions.length > 1) return { ok: false, error: 'two_wallets', wallets: mentions.map(mentionLabel_) };
+  // Investment category wallets (Saham, Emas…) get their value from the Investments tab.
+  const kept = mentions[0].wallets.filter(function (w) { return w.type !== 'Investment'; });
+  if (kept.length === 0) return { ok: false, error: 'adjust_investment', wallet: mentionLabel_(mentions[0]) };
+
+  // "0" / "Rp0" is a valid balance (parseAmountToken_ treats 0 as "not an amount").
+  let actual = null;
+  let amountOptions = null;
+  let amountText = '';
+  const zero = tokens.filter(function (t) { return !t.used && /^(rp\.?)?0+$/.test(t.clean); })[0];
+  const amounts = extractAmounts_(tokens);
+  if (zero && amounts.length === 0) {
+    zero.used = true;
+    actual = 0;
+    amountText = zero.raw;
+  } else {
+    const strong = amounts.filter(function (a) { return a.strong; });
+    const pool = strong.length ? strong : amounts;
+    if (pool.length === 0) return { ok: false, error: 'no_amount' };
+    if (pool.length > 1) return { ok: false, error: 'multiple_amounts', amounts: pool.map(function (a) { return a.text; }) };
+    const a = pool[0];
+    a.tokens.forEach(function (k) { tokens[k].used = true; });
+    const firstTok = tokens[a.tokens[0]];
+    const prev = tokens[a.tokens[0] - 1];
+    const negative = /^-/.test(firstTok.clean) || (prev && !prev.used && (prev.clean === '-' || prev.clean === 'minus'));
+    if (prev && !prev.used && (prev.clean === '-' || prev.clean === 'minus')) prev.used = true;
+    const sign = negative ? -1 : 1;
+    amountText = a.text;
+    if (a.ambiguous) amountOptions = a.ambiguous.options.map(function (v) { return v * sign; });
+    else actual = a.value * sign;
+  }
+
+  const note = tokens.filter(function (t) { return !t.used; }).map(function (t) { return t.raw; }).join(' ')
+    .replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, '');
+  return {
+    ok: true,
+    wallet: kept.length === 1 ? kept[0].name : null,
+    walletChoices: kept.length > 1 ? kept.map(function (w) { return w.name; }) : null,
+    actual: actual,
+    amountOptions: amountOptions,
+    amountText: amountText,
+    date: dateResult.date || new Date(now.getTime()),
+    dateNeedsConfirm: !!dateResult.needsConfirm,
+    dateText: dateResult.text || '',
+    note: note
+  };
 }

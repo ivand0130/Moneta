@@ -10,15 +10,16 @@ const DIRECTION_BY_TYPE = { Income: 'In', Expense: 'Out', Transfer: 'Transfer' }
 const CATEGORY_SOURCE_BY_HOW = { tag: 'Manual', chosen: 'Manual', keyword: 'Keyword', ai: 'AI' };
 
 /**
- * Saves one Income / Expense / Transfer draft. Must be called inside
- * withScriptLock_ (the caller also re-checks the pending entry there).
- * Returns the new Trx ID.
+ * Saves one Income / Expense / Transfer row (linkId joins the rows of a
+ * linked group, e.g. transfer + fee). Must be called inside withScriptLock_
+ * (the caller also re-checks the pending entry there). Returns the Trx ID.
  */
-function writeTransaction_(ss, d, loggedBy) {
+function writeTransaction_(ss, d, loggedBy, linkId) {
   const sheet = ss.getSheetByName(TAB.TRANSACTIONS);
   const id = nextId_(sheet, 'Trx ID', 'TRX');
   appendRowByHeaders_(ss, TAB.TRANSACTIONS, {
     'Trx ID': id,
+    'Link ID': linkId || '',
     'Date': new Date(d.date),
     'Logged By': loggedBy,
     'Type': d.type,
@@ -116,4 +117,32 @@ function describeRow_(r) {
   if (r['date'] instanceof Date) parts.push(formatDate_(r['date']));
   const note = String(r['note'] || '').trim();
   return parts.join(' | ') + (note ? ' | "' + escapeHtml_(note) + '"' : '');
+}
+
+/**
+ * Saves an Adjustment row (SPEC Section 6): Type and Category "Adjustment",
+ * Amount = |difference|, Direction In (balance goes up) or Out (down), so the
+ * Current Balance formula moves by the difference. Never counts as income or
+ * expense. Call inside withScriptLock_. Returns the Trx ID.
+ */
+function writeAdjustment_(ss, d, loggedBy) {
+  const category = (loadCategories_(ss).filter(function (c) { return c.type === 'Adjustment'; })[0] || {}).name ||
+    'Adjustment';
+  const sheet = ss.getSheetByName(TAB.TRANSACTIONS);
+  const id = nextId_(sheet, 'Trx ID', 'TRX');
+  appendRowByHeaders_(ss, TAB.TRANSACTIONS, {
+    'Trx ID': id,
+    'Date': new Date(d.date),
+    'Logged By': loggedBy,
+    'Type': 'Adjustment',
+    'Amount': Math.abs(d.diff),
+    'Direction': d.diff > 0 ? 'In' : 'Out',
+    'Category': category,
+    'Category Source': 'Manual',
+    'Wallet': d.wallet,
+    'Note': (d.note ? d.note + ' · ' : '') + 'Balance adjustment: recorded ' + formatRp_(d.recorded) +
+      ' → actual ' + formatRp_(d.actual),
+    'Input Source': 'Text'
+  });
+  return id;
 }

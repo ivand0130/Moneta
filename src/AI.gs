@@ -87,3 +87,92 @@ function aiSuggestCategory_(note, type, categoryNames) {
   }
   return match;
 }
+
+// ---------------------------------------------------------------------------
+// AI parsing fallback (deferred item from Phase 2, built in Phase 3)
+// ---------------------------------------------------------------------------
+// Used only when the rule-based parser finds no clear amount (no_amount /
+// multiple_amounts) and the text looks like it mentions money. Gemini's
+// answer is checked field by field against the real wallets and categories,
+// and always ends in the normal preview (marked "read by AI"), so nothing
+// unclear is ever saved. Transfers with fees etc. stay with the rules.
+
+/** True if the text has a digit or a number word, so asking Gemini is worth it ("hello" is not). */
+function looksLikeMoney_(text) {
+  return /\d/.test(text) ||
+    /(^|[^a-z])(ribu|rb|juta|jt|ratus|puluh|belas|seribu|sejuta|seratus|sepuluh|goceng|gocap|ceban|cepek|thousand|million|hundred)([^a-z]|$)/i.test(text);
+}
+
+/** Asks Gemini to read the message. Returns a parser-style result ({ ok: true, … readByAi }) or null. */
+function aiParseTransaction_(text, ctx, now) {
+  const wallets = ctx.wallets.filter(function (w) { return w.active && w.type === 'Cash'; }).map(function (w) { return w.name; });
+  const cats = function (type) {
+    return ctx.categories.filter(function (c) { return c.type === type; }).map(function (c) { return c.name; });
+  };
+  const prompt = [
+    'You read personal finance messages from a household in Indonesia (Bahasa Indonesia, English, or both).',
+    'Today is ' + Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd') + ' (Asia/Jakarta).',
+    'Message: ' + JSON.stringify(text),
+    'Wallets: ' + JSON.stringify(wallets),
+    'Expense categories: ' + JSON.stringify(cats('Expense')),
+    'Income categories: ' + JSON.stringify(cats('Income')),
+    'Amounts are Indonesian Rupiah: "dua puluh ribu" = 20000, "goceng" = 5000, "ceban" = 10000, "1,5 juta" = 1500000.',
+    'If the message is not ONE money transaction (a greeting, a question, several transactions), set is_transaction to false.',
+    'Reply with JSON only:',
+    '{"is_transaction": true, "type": "Expense|Income|Transfer", "amount": 20000, "wallet": "exact wallet name or empty",',
+    ' "to_wallet": "exact wallet name or empty (transfers only)", "date": "YYYY-MM-DD or empty", "note": "short note",',
+    ' "category": "exact category name or empty"}'
+  ].join('\n');
+  const answer = callGeminiJson_(prompt, 'parse');
+  return answer === null ? null : validateAiTransaction_(answer, ctx, now);
+}
+
+/**
+ * Checks Gemini's answer against the real data. Anything doubtful becomes
+ * empty (the normal flow then asks for it); a missing amount or type rejects
+ * the whole answer. Pure, so testAiParse can check it.
+ */
+function validateAiTransaction_(a, ctx, now) {
+  if (!a || a.is_transaction !== true) return null;
+  const type = ['Expense', 'Income', 'Transfer'].filter(function (t) { return t === a.type; })[0];
+  const amount = typeof a.amount === 'number' ? Math.round(a.amount) : Number(String(a.amount || '').replace(/[^\d]/g, ''));
+  if (!type || !(amount > 0) || amount > 1e12) return null;
+
+  const walletBy = function (name, forTransfer) {
+    if (!name) return null;
+    const w = ctx.wallets.filter(function (x) { return x.active && x.name.toLowerCase() === String(name).toLowerCase(); })[0];
+    if (!w) return null;
+    const allowed = forTransfer ? w.type !== 'Investment' : !isInvestmentWallet_(w, ctx.investmentGroups);
+    return allowed ? w.name : null;
+  };
+  const wallet = walletBy(a.wallet, type === 'Transfer');
+  let toWallet = type === 'Transfer' ? walletBy(a.to_wallet, true) : null;
+  if (toWallet && toWallet === wallet) toWallet = null;
+
+  let date = new Date(now.getTime());
+  const m = String(a.date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const d = makeDate_(Number(m[1]), Number(m[2]) - 1, Number(m[3]), now);
+    if (d && d.getTime() <= now.getTime() + 86400000 && d.getTime() >= now.getTime() - 366 * 86400000) date = d;
+  }
+
+  const note = String(a.note || '').trim().slice(0, 200);
+  let category = null;
+  let categoryHow = '';
+  if (type !== 'Transfer' && a.category) {
+    const c = ctx.categories.filter(function (x) {
+      return x.type === type && x.name.toLowerCase() === String(a.category).toLowerCase();
+    })[0];
+    if (c) { category = c.name; categoryHow = 'ai'; }
+  }
+  if (type !== 'Transfer' && !category) {
+    const k = matchKeyword_(note, ctx.categories, [type]);
+    if (k) { category = k.category; categoryHow = 'keyword'; }
+  }
+  return {
+    ok: true, type: type, amount: amount, amountOptions: null, amountReason: null, amountText: String(amount),
+    date: date, dateGiven: !!m, dateNeedsConfirm: false, dateText: '',
+    wallet: wallet, walletChoices: null, toWallet: toWallet, toWalletChoices: null,
+    category: category, categoryHow: categoryHow, unknownTag: null, note: note, extra: null, readByAi: true
+  };
+}

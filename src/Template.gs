@@ -95,6 +95,19 @@ function getSchema_() {
       { h: 'Category', w: 160 },
       { h: 'Type', list: LISTS.CATEGORY_TYPES, w: 110 },
       { h: 'Monthly Budget', fmt: FMT.RP },
+      { h: 'Spent', fmt: FMT.RP, formula: function (r) {
+        // This month's expenses per Expense category (budget or not).
+        const C = T.CATEGORIES, X = T.TRANSACTIONS;
+        return 'MAP(' + r(C, 'Category') + ',' + r(C, 'Type') + ',LAMBDA(c,t,IF(OR(c="",t<>"Expense"),,SUMIFS(' +
+          r(X, 'Amount') + ',' + r(X, 'Type') + ',"Expense",' + r(X, 'Category') + ',c,' +
+          r(X, 'Date') + ',">="&(EOMONTH(TODAY(),-1)+1),' + r(X, 'Date') + ',"<"&(EOMONTH(TODAY(),0)+1)))))';
+      } },
+      { h: 'Remaining', fmt: FMT.RP, redIfNegative: true, formula: function (r) {
+        // Budget − Spent; blank when there is no budget (empty or 0 = no limit).
+        const C = T.CATEGORIES;
+        return 'MAP(' + r(C, 'Category') + ',' + r(C, 'Monthly Budget') + ',' + r(C, 'Spent') +
+          ',LAMBDA(c,b,s,IF(OR(c="",N(b)=0),,N(b)-N(s))))';
+      } },
       { h: 'Keywords', w: 420 },
       { h: 'Default Wallet', ref: [T.WALLETS, 'Wallet'] }
     ] },
@@ -428,14 +441,7 @@ function setupTab_(ss, sheet, tab, r) {
       data.setDataValidation(SpreadsheetApp.newDataValidation()
         .requireValueInRange(ss.getRange(r(c.ref[0], c.ref[1])), true).setAllowInvalid(true).build());
     }
-    if (c.formula) {
-      sheet.getRange(1, col)
-        .setFormula('={"' + c.h + '";' + c.formula(r) + '}')
-        .setBackground(FORMULA_HEADER_BG);
-      sheet.getRange(1, col, maxRows, 1).protect()
-        .setDescription('Formula column: ' + c.h)
-        .setWarningOnly(true);
-    }
+    if (c.formula) setupFormulaColumn_(sheet, col, c, r);
   });
 
   sheet.setFrozenRows(1);
@@ -443,6 +449,101 @@ function setupTab_(ss, sheet, tab, r) {
   sheet.getRange(1, 1, 1, cols.length).protect()
     .setDescription('Headers (the bot finds columns by these names)')
     .setWarningOnly(true);
+}
+
+/**
+ * Writes a formula column: the formula in the header cell (green), number
+ * format, warning-only protection, and red text for negative values if
+ * asked. The sheet must be in the en_US locale while the formula is written.
+ */
+function setupFormulaColumn_(sheet, col, c, r) {
+  const maxRows = sheet.getMaxRows();
+  sheet.getRange(1, col)
+    .setFormula('={"' + c.h + '";' + c.formula(r) + '}')
+    .setFontWeight('bold')
+    .setBackground(FORMULA_HEADER_BG);
+  if (c.fmt) sheet.getRange(2, col, maxRows - 1, 1).setNumberFormat(c.fmt);
+  sheet.setColumnWidth(col, c.w || 130);
+  sheet.getRange(1, col, maxRows, 1).protect()
+    .setDescription('Formula column: ' + c.h)
+    .setWarningOnly(true);
+  if (c.redIfNegative) {
+    const range = sheet.getRange(2, col, maxRows - 1, 1);
+    const rules = sheet.getConditionalFormatRules();
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberLessThan(0).setFontColor('#cc0000').setBold(true).setRanges([range]).build());
+    sheet.setConditionalFormatRules(rules);
+  }
+}
+
+/**
+ * Like makeRangeResolver_, but uses the columns as they are NOW in an
+ * existing spreadsheet (you may have moved columns), found by header name.
+ */
+function makeSheetResolver_(ss) {
+  const maps = {};
+  return function (tab, header, withHeader) {
+    if (!maps[tab]) maps[tab] = getHeaderMap_(ss.getSheetByName(tab));
+    const idx = maps[tab][header.toLowerCase()];
+    if (idx === undefined) throw new Error('Column "' + header + '" not found in tab ' + tab);
+    const L = colLetter_(idx + 1);
+    return "'" + tab + "'!" + L + (withHeader ? '1' : '2') + ':' + L;
+  };
+}
+
+/**
+ * Adds the Spent and Remaining formula columns right after Monthly Budget in
+ * an existing Categories tab (sheets built before they existed). Returns a
+ * short description of what was done.
+ */
+function upgradeCategoryBudgetColumns_(ss) {
+  const sheet = ss.getSheetByName(TAB.CATEGORIES);
+  const schema = getSchema_().filter(function (t) { return t.name === TAB.CATEGORIES; })[0].columns;
+  const want = ['Monthly Budget', 'Spent', 'Remaining'];
+  const map = getHeaderMap_(sheet);
+  const missing = want.filter(function (h) { return map[h.toLowerCase()] === undefined; });
+  if (missing.length === 0) return 'Categories: already up to date';
+
+  // Formulas use English syntax, so write them while the sheet is en_US (see PROGRESS notes).
+  const locale = ss.getSpreadsheetLocale();
+  ss.setSpreadsheetLocale('en_US');
+  try {
+    let after = map['monthly budget'] !== undefined ? map['monthly budget'] + 1 : map['type'] + 1; // 1-based
+    if (map['monthly budget'] === undefined) {
+      sheet.insertColumnAfter(after);
+      after += 1;
+      sheet.getRange(1, after).setValue('Monthly Budget').setFontWeight('bold').setBackground(HEADER_BG);
+      sheet.getRange(2, after, sheet.getMaxRows() - 1, 1).setNumberFormat(FMT.RP);
+    }
+    ['Spent', 'Remaining'].forEach(function (h) {
+      SpreadsheetApp.flush(); // so "Spent" (a formula header) is readable before Remaining refers to it
+      if (getHeaderMap_(sheet)[h.toLowerCase()] !== undefined) return;
+      sheet.insertColumnAfter(after);
+      after += 1;
+      sheet.getRange(1, after).setValue(h); // header first, so the resolver can find it
+      const c = schema.filter(function (x) { return x.h === h; })[0];
+      setupFormulaColumn_(sheet, after, c, makeSheetResolver_(ss));
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    ss.setSpreadsheetLocale(locale);
+  }
+  return 'Categories: added ' + missing.join(', ');
+}
+
+/**
+ * Run from the editor after an update that adds columns or settings.
+ * Upgrades the main sheet and the template, then checks the main sheet.
+ * Safe to run more than once; your data and values are never changed.
+ */
+function upgradeSheets() {
+  [getProp_(PROP.MAIN_SHEET_ID), getProp_(PROP.TEMPLATE_ID)].forEach(function (id) {
+    if (id === null) return;
+    const ss = SpreadsheetApp.openById(id);
+    console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
+  });
+  upgradeSettings();
+  validateSheet();
 }
 
 /** Sample wallets and categories, settings, wallet groups, placeholder users. */

@@ -62,6 +62,19 @@ function testSheet() {
     ' wallets, every Current Balance is a number' +
     (bad.length ? ' (bad: ' + bad.map(function (w) { return w['wallet'] + '=' + w['current balance']; }).join(', ') + ')' : ''));
 
+  const cats = readTableByHeaders_(ss.getSheetByName(TAB.CATEGORIES), 'Category');
+  const badSpent = cats.filter(function (c) {
+    return String(c['type']) === 'Expense' && typeof c['spent'] !== 'number';
+  });
+  const badRemaining = cats.filter(function (c) {
+    return Number(c['monthly budget']) > 0 && typeof c['remaining'] !== 'number';
+  });
+  console.log((badSpent.length === 0 && badRemaining.length === 0 ? 'PASS' : 'FAIL') +
+    ': Categories Spent/Remaining calculate' +
+    (badSpent.length + badRemaining.length ? ' (bad: ' + badSpent.concat(badRemaining).map(function (c) {
+      return c['category'];
+    }).join(', ') + ')' : ''));
+
   const settings = getSettings_();
   console.log((settings['large amount threshold'] === '5000000' ? 'PASS' : 'FAIL') +
     ': Settings loader reads Large Amount Threshold = ' + settings['large amount threshold']);

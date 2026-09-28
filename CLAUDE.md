@@ -104,6 +104,7 @@ Bot replies in English; user input may be English or Bahasa Indonesia.
 - Two time triggers only: the hourly reminder dispatcher and the 1-minute
   message-cleanup trigger. The cleanup trigger must exit immediately when
   its queue is empty, to stay within the daily trigger runtime quota
-  (~90 min/day). It may only sleep for messages due within ~15 seconds:
-  budget messages follow every expense, so waiting a full minute for each
-  would use up the quota. Auto-delete delays are fixed at 60 seconds.
+  (~90 min/day). It may wait up to a minute only for on-demand replies
+  (/saldo, /budget: fixed 60 seconds). Budget messages after each save are
+  deleted at the end of the day (23:59) in one batch, so they never make it
+  wait.

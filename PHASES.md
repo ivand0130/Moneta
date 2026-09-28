@@ -74,29 +74,28 @@ Show me your plan and questions first.
 ## Phase 2B — Budgeting
 ```
 Read CLAUDE.md, SPEC.md (Section 25, Section 13 "Hiding sensitive amounts",
-Section 18 Tabs 3, 7, 15, 16) and PROGRESS.md.
+Section 18 Tabs 3, 7, 15) and PROGRESS.md.
 Phase 2B goal: budgets per category with a message after every save.
-- Budgets tab in getSchema_ (createTemplate + validateSheet): Category
-  dropdown from a new Settings helper list "Expense Categories", Monthly
-  Budget (Rp format), Notes. Also add the Budget_History tab (written in
-  Phase 8). Remove "Monthly Budget" from the Categories schema
-- An upgrade function for my EXISTING main sheet and template: add the
-  Budgets and Budget_History tabs and the helper list, copy any values from
-  Categories → Monthly Budget into Budgets, then remove that column
+(Already built before this phase: the Categories tab's Monthly Budget,
+Spent and Remaining columns, upgradeSheets(), and the "Password for
+/saldo" switch — check PROGRESS.md.)
+- Load Monthly Budget per Expense category (empty/0 = no limit; ignore
+  budgets on non-Expense categories)
 - ONE shared "counts as expense / income" rule, used for spent now and by
-  /report and the Dashboard later
-- Spent calculated live from Transactions for the ENTRY's month (message
-  after save) or the current month (/budget); empty/0 budget = no limit
+  /report and the Dashboard later (today: Type = Expense)
+- Spent calculated by the bot for the ENTRY's month (message after save)
+  or the current month (/budget)
 - The separate budget message after every successful save (under, exactly
   at, over; one message for a linked group with several categories; none
   for no-limit categories, non-expenses or /undo) via ONE reusable
   "after save" step that every later flow calls
-- /budget and /budget [category], spoiler amounts, warnings for duplicate
-  or unknown categories in the Budgets tab
-- Setting "Budget auto-delete" = Yes/No (default Yes), FIXED 60 seconds,
-  same queue as /saldo. Change the cleanup trigger so it only waits for
-  messages due within ~15s (quota-safe, SPEC Section 13); /saldo keeps its
-  fixed 60s
+- /budget and /budget [category] with spoiler amounts; "Password for
+  /budget" switch in Settings (default No)
+- "Budget auto-delete" = Yes/No (default Yes): budget messages after saving
+  are deleted at the end of the day (23:59) in one batch; the /budget reply
+  after 60 seconds. Same queue and cleanup trigger as /saldo, no new trigger
+- Add the Budget_History tab to the schema (written in Phase 8) and the new
+  Settings rows via upgradeSheets()
 Show me your plan and questions first.
 ```
 
@@ -195,9 +194,9 @@ summary amounts with the spoiler helper from Phase 2), automatic
 report after closing, the 18:00 last-day closing reminder, /setsheet with
 validation, /setarchive, /settemplate, /template. On closing, write each
 budgeted category's budget and spent to Budget_History; /report shows
-budget usage (Budget_History for closed months, Budgets tab live for the
-current month), using the shared "counts as expense" rule. Carry the
-Budgets tab over. Be careful: closing deletes data from the main sheet,
+budget usage (Budget_History for closed months, Categories tab live for
+the current month), using the shared "counts as expense" rule. Carry the
+Categories budgets over. Be careful: closing deletes data from the main sheet,
 so archive and verify first.
 Show me your plan and questions first.
 ```

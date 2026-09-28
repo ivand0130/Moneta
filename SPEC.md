@@ -25,9 +25,12 @@
   logged as an Expense and the image is saved to Drive (Section 24). A photo
   goes to the GoPay Split Bill flow only if the issuer is GoPay AND it has a
   participant list
-- Budgets are set per category in a Budgets tab; empty/0 = no limit; a
-  separate budget message follows each save, and can auto-delete after a
-  fixed 60 seconds ("Budget auto-delete" = Yes/No) (Section 25)
+- Budgets are set per category in the Categories tab (Monthly Budget, with
+  live Spent and Remaining formula columns); empty/0 = no limit; a separate
+  budget message follows each save and can auto-delete at the end of the
+  day ("Budget auto-delete" = Yes/No) (Section 25)
+- /saldo and /budget each have a Settings switch to turn the password on or
+  off (Section 13)
 - Investment prices are manual only for now
 
 ## 1. Role & Goal
@@ -402,7 +405,8 @@ only when the image is a GoPay Split Bill.)
 
 ## 13. Security
 - Only allowed chat IDs can use the bot
-- /saldo and /setsheet require a password; default is 0000
+- /setsheet always requires the password; /saldo and /budget require it
+  when their switch in Settings is on (see below); default password 0000
 - /changepass to change the password; the bot reminds me to change the
   default on first use
 - The password is stored in the Settings tab ("Password" row, numbers only,
@@ -429,16 +433,21 @@ only when the image is a GoPay Split Bill.)
     (CacheService, with a Script Properties backup)
   - A cleanup trigger runs every minute and exits immediately when the queue
     is empty to save quota
-  - Timing vs quota: the trigger only waits (sleeps) for a message that is
-    due within about 15 seconds; anything later is left for the next run.
-    So deletion happens about 60–120 seconds after sending. Waiting longer
-    for every message would use up the ~90 min/day trigger runtime quota,
-    because budget messages follow every expense
+  - Timing: each run also takes messages due within the next minute and
+    waits until their exact time, so a 60-second message disappears at
+    about 60 seconds. This is fine for the quota (~90 min/day of trigger
+    runtime) because only on-demand replies (/saldo, /budget) use it
   - If deletion fails (e.g. message already deleted), log it and move on
   - The bot adds a small note under the reply, e.g.
-    "🕒 This message will be deleted in about 1 min"
-- The same auto-delete queue is used for the budget message after saving and
-  the /budget reply, when "Budget auto-delete" = Yes (Section 25)
+    "🕒 This message will be deleted in 60s"
+- Password switches in Settings: "Password for /saldo" (default Yes) and
+  "Password for /budget" (default No). No = the reply is shown right away,
+  still with hidden amounts and auto-delete. Read fresh, so a change applies
+  immediately. One switch for both users
+- The same queue is used for budget messages (Section 25): the /budget
+  reply is deleted after 60 seconds; the budget message after each save is
+  deleted at the END OF THE DAY (23:59 Asia/Jakarta), in one batch, so the
+  many messages that follow expenses never make the trigger wait
 
 ## 14. Confirmation & Error Handling
 The bot must ask me questions instead of guessing when:
@@ -524,7 +533,8 @@ Confirmation rules:
     unrealized and realized gain/loss, month-over-month change
   - Net worth: cash wallets + investment value + piutang − hutang
   - Transaksi Favorit: paid vs skipped this month (only those with dates)
-  - Budget usage per category from the Budgets tab (see Section 25)
+  - Budget usage per category from the Categories budget columns (see
+    Section 25)
   - Breakdown by user (me vs partner)
 - Format: a short chat summary plus a link to the report tab of the newly
   generated archive sheet
@@ -601,9 +611,12 @@ Tab 2: Hutang_Piutang (one row per record or sub-record)
 
 Tab 3: Categories: name, type (income/expense/investment),
 keywords for auto-detection, default wallet [optional]; include default
-"Admin & Bank Fees" and "Adjustment" categories. (No budget column: budgets
-live in the Budgets tab. The main sheet built in Phase 1 still has a
-"Monthly Budget" column here; Phase 2B moves its values and removes it.)
+"Admin & Bank Fees" and "Adjustment" categories. Budget columns (Section
+25): Monthly Budget (typed by me; empty/0 = no limit), Spent (formula: this
+month's expenses in that category, Expense categories only) and Remaining
+(formula: Budget − Spent, blank when there is no budget, red when over).
+Column order: Category, Type, Monthly Budget, Spent, Remaining, Keywords,
+Default Wallet
 
 Tab 4: Wallets: wallet name, wallet group, wallet type (cash / investment
 category), opening balance, current balance, owner (Me / Partner / Shared),
@@ -620,12 +633,13 @@ Tab 7: Settings: a Users table (chat ID, display name, GoPay name) for me
 and my partner, main sheet ID, archive folder ID, receipts folder ID, reminder
 times, thresholds (large amount, duplicate window, reminder days), timezone,
 AI on/off, Gemini model, Hide amounts (yes/no), Password (numbers only),
-Spending Wallet Groups, Investment Wallet Groups, Budget auto-delete
-(yes/no). Helper lists: Owners, Investment Categories, Expense Categories
-(for the Budgets dropdown), Wallet Groups.
+Password for /saldo (yes/no), Password for /budget (yes/no), Spending
+Wallet Groups, Investment Wallet Groups, Budget auto-delete (yes/no).
+Helper lists: Owners, Investment Categories, Wallet Groups.
 (Bot token, Gemini key and folder/sheet IDs are stored in Script
-Properties; the ID rows in Settings are info only. The /saldo auto-delete
-delay is fixed at 60 seconds, not a setting.)
+Properties; the ID rows in Settings are info only. Auto-delete delays are
+fixed — 60 seconds for /saldo and /budget, end of day for budget messages
+after saving — not settings.)
 
 Tab 8: (no Pending tab) Pending confirmations are stored in CacheService
 with a 10-minute expiry, keyed by chat ID
@@ -675,10 +689,7 @@ source (manual / bulk / sheet edit / auto), month-end flag
 
 Tab 14: Contacts: name, aliases (e.g. GoPay display names), notes
 
-Tab 15: Budgets: category, monthly budget (empty/0 = no limit), notes
-(see Section 25)
-
-Tab 16: Budget_History: month key, category, budget, spent, remaining,
+Tab 15: Budget_History: month key, category, budget, spent, remaining,
 over/under. Written by the script at closing, one row per budgeted
 category per month (the Monthly Report tab has one row per month, so it
 can't hold per-category values). Past reports read from here.
@@ -834,8 +845,10 @@ Bot (last day, 18:00): 📅 Ready to close September 2026? [Start closing]
    override, caption without amount, cancel = no upload, upload failure,
    link in Transactions tab, partner opening the link), budgets (no limit,
    0, under, exactly at, over, several categories in one linked group,
-   back-dated entry in the previous month, /undo, sheet edits, renamed
-   category, /budget, auto-delete Yes and No), and every error case
+   back-dated entry in the previous month, /undo, sheet edits, Spent and
+   Remaining columns, /budget with and without password, auto-delete Yes
+   and No, end-of-day deletion), /saldo with and without password, and
+   every error case
 7. Suggest improvements or risks I haven't thought of
 
 ## 23. Success Criteria
@@ -940,26 +953,24 @@ Bot: ✅ Saved as TRX-0142 · 🧾 View receipt
 
 ## 25. Budgeting
 
-### Budgets tab (master budget per category)
-- A dedicated Budgets tab is the ONLY place budgets are set
-- Columns: Category, Monthly Budget, Notes
-  - Category dropdown lists Expense categories only. Sheets can't filter a
-    dropdown by type, so it reads a helper list "Expense Categories" in the
-    Settings tab (a formula, like "Investment Categories")
-  - Monthly Budget uses the Rp number format
+### Where budgets live: the Categories tab
+- Budgets are set per category in the Categories tab, which already has a
+  Monthly Budget column. Two formula columns sit next to it:
+  - Spent: this month's expenses in that category (calculated live from the
+    Transactions tab; only for Expense categories)
+  - Remaining: Monthly Budget − Spent; blank when there is no budget; shown
+    in red when negative (over budget)
 - Monthly Budget can be empty or 0 → treated as NO LIMIT: that category
   behaves exactly as it does today, with no budget message
+- Budgets only make sense for Expense categories; I simply leave the budget
+  empty for Income / Investment / Adjustment categories (no dropdown
+  restriction). The bot ignores budgets on non-Expense categories
 - Budgets are monthly and shared by me and my partner (both users' spending
   counts). There are no per-user budgets and no rollover of unused budget
-- Edits in the sheet take effect immediately; the bot reads the tab at
-  runtime (not cached). The tab is carried over on closing
-- A category listed twice: the first row is used and /budget shows a
-  warning. A Budgets row whose category no longer exists in Categories
-  (e.g. renamed) is ignored and /budget shows a warning
-- Migration of the Phase 1 sheet: the Categories tab has a "Monthly Budget"
-  column. An upgrade function adds the Budgets tab (with dropdown, formats,
-  frozen header) to the main sheet and the template, copies any values
-  already typed in that column, then removes the column from Categories
+- Edits in the sheet take effect immediately; the bot reads the Categories
+  tab at runtime (not cached)
+- Sheets built before this feature get the Spent and Remaining columns via
+  an upgrade function (inserted right after Monthly Budget)
 
 ### How "spent" is calculated
 - Spent = sum of all expense amounts in that category in a given month,
@@ -971,16 +982,19 @@ Bot: ✅ Saved as TRX-0142 · 🧾 View receipt
 - Does NOT count: income, transfers, investments, adjustments, piutang
   lent, hutang, or settlements
 - ONE shared rule decides whether a Transactions row "counts as an expense"
-  (and as income). Budgets, /report, the Monthly Report and the Dashboard
-  all use it, so their numbers always agree. How Conversion rows count is
-  decided in Phase 4 and then applies everywhere
+  (and as income). The bot's budget messages, /report, the Monthly Report,
+  the Dashboard and the Categories Spent column all use it, so their numbers
+  always agree. Today that rule is Type = Expense; how Conversion rows count
+  is decided in Phase 4 and then applied everywhere (including the Spent
+  formula)
 - Remaining = Budget − Spent. % used = Spent ÷ Budget
 
 ### Which month
 - The budget message after saving uses the month of the ENTRY's date
   (e.g. on 1 Oct, "50rb makan kemarin" is dated 30 Sep → September's
-  budget, spent and remaining)
-- /budget always shows the current month (today, Asia/Jakarta)
+  budget, spent and remaining). The bot calculates this itself
+- /budget and the Categories Spent/Remaining columns show the current month
+  (today, Asia/Jakarta)
 
 ### Budget message after saving
 - After a transaction is saved successfully, IF it includes an expense in a
@@ -1007,21 +1021,23 @@ Bot: ✅ Saved as TRX-0142 · 🧾 View receipt
 - /budget: every category with a budget > 0 showing budget, spent,
   remaining and % used; over-budget categories flagged with ⚠️; a total
   row; plus one line for spending in no-limit categories
-- /budget [category]: the same for one category (any case; #tag-style
+- /budget [category]: the same for one category (any case; a unique
   prefix works, e.g. /budget bills)
 - Current month only; past months are in /report
-- No password required (amounts are hidden until tapped, and the reply
-  auto-deletes when "Budget auto-delete" = Yes)
+- Password: asked only when "Password for /budget" = Yes in Settings
+  (default No), using the same password flow as /saldo (Section 13)
 
 ### Disappearing messages
 - Setting: "Budget auto-delete" = Yes / No (default Yes)
-- Yes → the budget message after saving AND the /budget reply are deleted
-  after a FIXED 60 seconds, using the same queue and cleanup trigger as
-  /saldo (Section 13), with the note "🕒 Deleted in about 1 min"
-- No → they stay in the chat
-- Budget messages follow every expense, so they must not make the cleanup
-  trigger wait: only messages due within ~15 seconds are waited for
-  (Section 13); deletion happens about 60–120 seconds after sending
+- Yes →
+  - the budget message after saving is deleted at the END OF THE DAY
+    (23:59 Asia/Jakarta), with the note "🕒 Deleted at the end of the day".
+    All of the day's budget messages go in one batch, so the cleanup
+    trigger never has to wait for them (quota-safe)
+  - the /budget reply is deleted after 60 seconds, like /saldo
+- No → both stay in the chat
+- Both use the same queue and 1-minute cleanup trigger as /saldo (Section
+  13); no extra trigger
 - The "✅ Saved" message itself is never auto-deleted, so the transaction
   record stays in the chat
 
@@ -1029,7 +1045,7 @@ Bot: ✅ Saved as TRX-0142 · 🧾 View receipt
 - The monthly report's "Budget usage per category" section shows budget,
   spent, remaining, and over/under per category
 - On closing, each budgeted category's budget and spent amount are saved in
-  the Budget_History tab (Section 18, Tab 16: one row per category per
+  the Budget_History tab (Section 18, Tab 15: one row per category per
   month), so later budget changes don't alter past reports. /report for a
   closed month reads Budget_History; for the current month it reads the
-  Budgets tab live
+  Categories tab live. The Categories budgets are carried over on closing

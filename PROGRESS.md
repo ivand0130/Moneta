@@ -14,16 +14,25 @@ Phase 1 — DONE (2026-09-25).
 
 ## Spec change 2026-09-28: receipts (SPEC 24) + budgeting (SPEC 25)
 Decisions (owner): GoPay flow only if issuer = GoPay AND participant list;
-"Budget auto-delete" = Yes/No with a fixed 60s (like /saldo); cleanup is
-quota-safe (sleeps only for messages due within ~15s); budget message uses
-the entry's month, /budget the current month; budget history goes to a new
-Budget_History tab. Changes needed in code that is ALREADY built:
-- Phase 2B: cleanupMessages currently sleeps up to 60s per due message
-  (Telegram.gs) — reduce to ~15s; Categories "Monthly Budget" column
-  (Phase 1 schema + existing sheet) moves to the new Budgets tab via an
-  upgrade function; add Settings helper "Expense Categories" and the
-  "Budget auto-delete" row; saveTrx_ (Confirm.gs) must call a reusable
-  "after save" step
+budgets stay in the Categories tab (Monthly Budget + formula columns Spent
+and Remaining; no Budgets tab, no dropdown restriction — user leaves non-
+expense budgets empty); budget message uses the entry's month, /budget the
+current month; "Budget auto-delete" = Yes/No: budget messages after saving
+are deleted at END OF DAY (23:59) in one batch, /budget and /saldo replies
+after a fixed 60s (the cleanup's precise ≤60s wait stays, it only serves
+on-demand replies); "Password for /saldo" and "Password for /budget"
+switches in Settings (one switch for both users); budget history goes to a
+new Budget_History tab at closing.
+Already done (2026-09-28, in Phase 2 code):
+- Categories Spent/Remaining formula columns in getSchema_ (Remaining red
+  when negative) + upgradeSheets() to add them to the existing main sheet
+  and template (writes formulas in en_US, then restores the locale; also
+  runs upgradeSettings and validateSheet)
+- "Password for /saldo" switch (Settings, default Yes, read fresh)
+Still to change in code that is already built:
+- Phase 2B: saveTrx_ (Confirm.gs) must call a reusable "after save" step;
+  add "Password for /budget" and "Budget auto-delete" rows; add
+  Budget_History to the schema; end-of-day delete time for budget messages
 - Phase 7: LISTS.INPUT_SOURCES (Config.gs) and the sheet dropdown change to
   Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet; parser needs a caption
   mode with an optional amount; routeUpdate_ must accept image documents;

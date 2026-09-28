@@ -100,6 +100,11 @@ function askPassword_(chatId, purpose, extra, promptText) {
 
 /** /saldo [wallet, group, owner or "all"] */
 function startSaldo_(chatId, filter) {
+  loadSettingsTab_(true); // fresh, so turning the password on/off in Settings applies right away
+  if (!getSettingYes_(SETTING.SALDO_PASSWORD)) {
+    showSaldo_(chatId, filter, false);
+    return;
+  }
   askPassword_(chatId, 'saldo', { filter: filter }, '🔒 Enter the password to see balances.');
 }
 

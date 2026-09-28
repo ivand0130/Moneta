@@ -3,10 +3,11 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 2 — DONE (2026-09-28). All editor tests and the Telegram checklist
-passed (incl. the budget message after saving).
-Next: Phase 2B — Budgeting (only /budget, "Password for /budget" and
-Budget_History remain; see PHASES.md), then Phase 3.
+Phase 2B — code pushed (2026-09-28), waiting on upgradeSheets + deploy +
+Telegram test.
+Phase 2 — DONE (2026-09-28).
+Next after 2B: Phase 3 — Adjust balance and transfers with fees/partial
+expense.
 
 ## Deferred (agreed, must be picked up later — do not drop)
 - AI natural-language PARSING fallback: when the rule-based parser can't read
@@ -43,8 +44,15 @@ Already done (2026-09-28, part of Phase 2):
 - upgradeSettings removes OBSOLETE_SETTINGS rows (e.g. "Saldo auto-delete
   (seconds)"), moving only the Setting/Value/Notes cells
 Still to change in code that is already built:
-- Phase 2B: /budget and /budget [category], "Password for /budget",
-  Budget_History in the schema; every new saving flow must call afterSave_
+- Phase 2B (pushed, being tested): /budget and /budget [category]
+  (buildBudgetReport_ in Categories.gs, pure; total covers budgeted
+  categories only, plus a "Spending without a budget" line; warnings for
+  budgets on non-Expense categories and duplicate names), "Password for
+  /budget" switch (default No, same password flow as /saldo), /budget reply
+  deleted after 60s when Budget auto-delete = Yes, Budget_History tab in the
+  schema + upgradeMissingTabs_ (added to existing sheets by upgradeSheets),
+  testBudgetCommand
+- From now on every new saving flow must call afterSave_
 - Phase 7: LISTS.INPUT_SOURCES (Config.gs) and the sheet dropdown change to
   Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet; parser needs a caption
   mode with an optional amount; routeUpdate_ must accept image documents;

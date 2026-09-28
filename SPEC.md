@@ -689,8 +689,8 @@ source (manual / bulk / sheet edit / auto), month-end flag
 
 Tab 14: Contacts: name, aliases (e.g. GoPay display names), notes
 
-Tab 15: Budget_History: month key, category, budget, spent, remaining,
-over/under. Written by the script at closing, one row per budgeted
+Tab 15: Budget_History: Month Key, Month, Category, Budget, Spent,
+Remaining, Status (Under / At / Over). Written by the script at closing, one row per budgeted
 category per month (the Monthly Report tab has one row per month, so it
 can't hold per-category values). Past reports read from here.
 

@@ -166,6 +166,9 @@ function handleText_(message) {
       case '/saldo':
         startSaldo_(chatId, args);
         return;
+      case '/budget':
+        startBudget_(chatId, args);
+        return;
       case '/changepass':
         startChangePassword_(chatId);
         return;
@@ -225,6 +228,7 @@ function buildHelpText_() {
     '📋 <b>Commands</b>',
     '/saldo — balances (password), without investments. <code>/saldo all</code> includes them',
     '   One wallet, group or owner: <code>/saldo bca</code>, <code>/saldo spending</code>, <code>/saldo me</code>',
+    '/budget — budgets this month (spent, remaining) · <code>/budget food</code>',
     '/undo — delete your last entry',
     '/wallet — list wallets · <code>/wallet add Jenius</code>',
     '/category or /cat — list categories · <code>/cat add Pets</code>',

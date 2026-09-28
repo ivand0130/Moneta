@@ -256,6 +256,17 @@ function getSchema_() {
       { h: 'Wallet Groups', w: 130 }
     ] },
 
+    // Filled at monthly closing (Phase 8): one row per budgeted category per month.
+    { name: T.BUDGET_HISTORY, columns: [
+      { h: 'Month Key', w: 90 },
+      { h: 'Month', fmt: FMT.TEXT, w: 90 },
+      { h: 'Category', w: 160 },
+      { h: 'Budget', fmt: FMT.RP },
+      { h: 'Spent', fmt: FMT.RP },
+      { h: 'Remaining', fmt: FMT.RP },
+      { h: 'Status', list: LISTS.BUDGET_STATUSES, w: 80 }
+    ] },
+
     { name: T.LOGS, columns: [
       { h: 'Timestamp', fmt: FMT.DATETIME, w: 140 },
       { h: 'Level', w: 70 },
@@ -532,6 +543,29 @@ function upgradeCategoryBudgetColumns_(ss) {
 }
 
 /**
+ * Creates any tab from the schema that an existing spreadsheet doesn't have
+ * yet (e.g. Budget_History), with headers, formats, dropdowns and
+ * protection, at the end. Existing tabs are never touched.
+ */
+function upgradeMissingTabs_(ss) {
+  const added = [];
+  getSchema_().forEach(function (tab) {
+    if (ss.getSheetByName(tab.name) !== null || tab.columns.length === 0) return;
+    const locale = ss.getSpreadsheetLocale();
+    ss.setSpreadsheetLocale('en_US'); // in case the tab has formula columns
+    try {
+      const sheet = ss.insertSheet(tab.name, ss.getSheets().length);
+      setupTab_(ss, sheet, tab, makeSheetResolver_(ss));
+      SpreadsheetApp.flush();
+    } finally {
+      ss.setSpreadsheetLocale(locale);
+    }
+    added.push(tab.name);
+  });
+  return added.length ? 'added tab ' + added.join(', ') : 'tabs already up to date';
+}
+
+/**
  * Run from the editor after an update that adds columns or settings.
  * Upgrades the main sheet and the template, then checks the main sheet.
  * Safe to run more than once; your data and values are never changed.
@@ -540,6 +574,7 @@ function upgradeSheets() {
   [getProp_(PROP.MAIN_SHEET_ID), getProp_(PROP.TEMPLATE_ID)].forEach(function (id) {
     if (id === null) return;
     const ss = SpreadsheetApp.openById(id);
+    console.log(ss.getName() + ' → ' + upgradeMissingTabs_(ss));
     console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
   });
   upgradeSettings();

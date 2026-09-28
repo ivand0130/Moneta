@@ -35,7 +35,8 @@ const TAB = {
   CONTACTS: 'Contacts',
   REPORT: 'Monthly Report',
   SETTINGS: 'Settings',
-  LOGS: 'Logs'
+  LOGS: 'Logs',
+  BUDGET_HISTORY: 'Budget_History'
 };
 
 /**
@@ -59,6 +60,7 @@ const LISTS = {
   VALUE_TYPES: ['Fixed', 'Variable'],
   SCHEDULES: ['Weekly', 'Monthly'],
   REPORT_STATUSES: ['Open', 'Closed'],
+  BUDGET_STATUSES: ['Under', 'At', 'Over'],
   PRICE_SOURCES: ['Manual', 'Bulk', 'Sheet Edit', 'Auto', 'Closing'],
   YES_NO: ['Yes', 'No']
 };
@@ -73,6 +75,7 @@ const SETTING = {
   PASSWORD: 'Password',
   SALDO_PASSWORD: 'Password for /saldo',
   BUDGET_AUTO_DELETE: 'Budget auto-delete',
+  BUDGET_PASSWORD: 'Password for /budget',
   SPENDING_GROUPS: 'Spending Wallet Groups',
   INVESTMENT_GROUPS: 'Investment Wallet Groups'
 };
@@ -91,7 +94,8 @@ const SETTING_ROWS = [
   [SETTING.HIDE_AMOUNTS, 'Yes', 'Yes = amounts in /saldo, /inv, /open, /report are hidden until tapped.'],
   [SETTING.PASSWORD, '0000', 'Password for /saldo. Numbers only. Change it here or with /changepass. 0000 = default (the bot reminds you to change it).'],
   [SETTING.SALDO_PASSWORD, 'Yes', 'Yes = /saldo asks for the password. No = /saldo shows balances right away (still hidden until tapped, and deleted after 60s).'],
-  [SETTING.BUDGET_AUTO_DELETE, 'Yes', 'Yes = the budget message sent after each save is deleted at the end of the day (23:59). No = it stays.'],
+  [SETTING.BUDGET_AUTO_DELETE, 'Yes', 'Yes = the budget message after each save is deleted at the end of the day (23:59), and the /budget reply after 60s. No = both stay.'],
+  [SETTING.BUDGET_PASSWORD, 'No', 'Yes = /budget asks for the password (same as /saldo). No = /budget shows right away.'],
   [SETTING.SPENDING_GROUPS, 'Spending', 'Wallet groups offered as buttons for expenses (comma-separated).'],
   [SETTING.INVESTMENT_GROUPS, 'Investment', 'Wallet groups that hold investment money: not usable for expenses/income, hidden in /saldo (shown in /saldo all). Transfers are fine.'],
   ['Daily Reminder Time', '08:00', 'Hour for the daily hutang/piutang reminder (HH:MM).'],
@@ -106,6 +110,9 @@ const SETTING_ROWS = [
 
 /** The /saldo reply is deleted this many seconds after it's sent (fixed by the owner's choice). */
 const SALDO_DELETE_SECONDS = 60;
+
+/** The /budget reply is deleted this many seconds after it's sent (when Budget auto-delete = Yes). */
+const BUDGET_REPLY_DELETE_SECONDS = 60;
 
 /** Settings rows from earlier versions that are no longer used; upgradeSettings() removes them. */
 const OBSOLETE_SETTINGS = ['Saldo auto-delete (seconds)', 'Budget auto-delete (seconds)'];

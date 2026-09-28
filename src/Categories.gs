@@ -173,3 +173,117 @@ function buildBudgetText_(items, hide) {
     return head + '\n' + line;
   }).join('\n\n');
 }
+
+/** "Spent Rp60.000 of Rp100.000 (60%) · Rp40.000 left" or "… (110%) · over by Rp10.000". */
+function budgetLine_(budget, spent, hide) {
+  const pct = Math.round(spent / budget * 100);
+  const left = budget - spent;
+  return 'Spent ' + money_(spent, hide) + ' of ' + money_(budget, hide) + ' (' + pct + '%) · ' +
+    (left < 0 ? 'over by ' + money_(-left, hide) : money_(left, hide) + ' left');
+}
+
+/**
+ * The /budget reply for the month of `now`. filter (optional) = one
+ * category (any case, unique prefix). Returns { text } or { error }.
+ * Pure: categories/rows are passed in, so testBudgetCommand can check it.
+ */
+function buildBudgetReport_(categories, rows, now, filter, hide) {
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const monthLabel = Utilities.formatDate(new Date(year, month, 1), Session.getScriptTimeZone(), 'MMMM yyyy');
+  const f = String(filter || '').trim().replace(/^#/, '');
+
+  if (f !== '') {
+    const c = findCategoryByTag_(f, categories);
+    if (!c) return { error: 'No category called "' + escapeHtml_(f) + '". See /category for the list.' };
+    if (c.type !== 'Expense') {
+      return { error: escapeHtml_(c.name) + ' is an ' + escapeHtml_(c.type) + ' category. Budgets are only for expense categories.' };
+    }
+    const spent = spentInMonth_(rows, c.name, year, month);
+    if (!(c.budget > 0)) {
+      return { text: '📊 <b>' + escapeHtml_(c.name) + ' · ' + monthLabel + '</b>\nNo budget set (no limit). Spent this month: ' +
+        money_(spent, hide) + '\n<i>Set one in the Categories tab → Monthly Budget.</i>' };
+    }
+    return { text: (spent > c.budget ? '⚠️ ' : '📊 ') + '<b>' + escapeHtml_(c.name) + ' · ' + monthLabel + '</b>\n' +
+      budgetLine_(c.budget, spent, hide) };
+  }
+
+  // All categories: first row wins if a name appears twice.
+  const seen = [];
+  const duplicates = [];
+  const budgeted = [];
+  const ignored = [];
+  categories.forEach(function (c) {
+    const key = c.name.toLowerCase();
+    if (seen.indexOf(key) !== -1) { duplicates.push(c.name); return; }
+    seen.push(key);
+    if (c.budget > 0 && c.type !== 'Expense') ignored.push(c.name);
+    else if (c.budget > 0) budgeted.push(c);
+  });
+
+  const lines = ['📊 <b>Budgets · ' + monthLabel + '</b>'];
+  let totalBudget = 0;
+  let totalSpent = 0;
+  if (budgeted.length === 0) {
+    lines.push('', 'No budgets set yet. Add a Monthly Budget to an expense category in the Categories tab.');
+  } else {
+    lines.push('');
+    budgeted.forEach(function (c) {
+      const spent = spentInMonth_(rows, c.name, year, month);
+      totalBudget += c.budget;
+      totalSpent += spent;
+      lines.push((spent > c.budget ? '⚠️ ' : '• ') + '<b>' + escapeHtml_(c.name) + '</b>: ' + budgetLine_(c.budget, spent, hide));
+    });
+    lines.push('', '<b>Total budgeted</b>: ' + budgetLine_(totalBudget, totalSpent, hide));
+  }
+
+  // Spending in categories without a budget (or with no category at all).
+  const budgetedNames = budgeted.map(function (c) { return c.name; });
+  const other = rows.reduce(function (sum, r) {
+    const d = r['date'];
+    if (!(d instanceof Date) || d.getFullYear() !== year || d.getMonth() !== month || !countsAsExpense_(r)) return sum;
+    return budgetedNames.indexOf(String(r['category']).trim()) === -1 ? sum + (Number(r['amount']) || 0) : sum;
+  }, 0);
+  lines.push('Spending without a budget: ' + money_(other, hide));
+
+  if (ignored.length) {
+    lines.push('', '<i>⚠️ Budgets on ' + escapeHtml_(ignored.join(', ')) + ' are ignored (only Expense categories use budgets).</i>');
+  }
+  if (duplicates.length) {
+    lines.push('<i>⚠️ ' + escapeHtml_(duplicates.join(', ')) + ' appears more than once in Categories; the first row is used.</i>');
+  }
+  return { text: lines.join('\n') };
+}
+
+/** /budget [category] — asks for the password first if "Password for /budget" = Yes. */
+function startBudget_(chatId, filter) {
+  loadSettingsTab_(true); // fresh, so the switches apply right away
+  if (getSettingYes_(SETTING.BUDGET_PASSWORD)) {
+    askPassword_(chatId, 'budget', { filter: filter }, '🔒 Enter the password to see budgets.\n' +
+      '<i>You can turn this off in Settings → Password for /budget.</i>');
+    return;
+  }
+  showBudget_(chatId, filter, false);
+}
+
+/** Sends the /budget reply; deleted after 60s when "Budget auto-delete" = Yes. */
+function showBudget_(chatId, filter, isDefaultPassword) {
+  const ss = openMainSheet_();
+  const result = buildBudgetReport_(loadCategories_(ss), loadTransactions_(ss), new Date(), filter);
+  if (result.error) {
+    sendMessage(chatId, result.error);
+    return;
+  }
+  let text = result.text;
+  if (isDefaultPassword) {
+    text += '\n\n⚠️ You are still using the default password <b>0000</b>. Change it with /changepass.';
+  }
+  const autoDelete = getSettingYes_(SETTING.BUDGET_AUTO_DELETE);
+  const triggerMissing = autoDelete && !ScriptApp.getProjectTriggers().some(function (t) {
+    return t.getHandlerFunction() === 'cleanupMessages';
+  });
+  if (autoDelete && !triggerMissing) text += '\n\n🕒 This message will be deleted in ' + formatDelay_(BUDGET_REPLY_DELETE_SECONDS) + '.';
+  if (triggerMissing) text += '\n\n⚠️ Auto-delete is not set up yet (run installCleanupTrigger in the editor).';
+  const sent = sendMessage(chatId, text);
+  if (autoDelete && !triggerMissing) scheduleDelete_(chatId, sent.message_id, BUDGET_REPLY_DELETE_SECONDS);
+}

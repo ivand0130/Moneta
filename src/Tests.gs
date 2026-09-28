@@ -408,3 +408,38 @@ function testBudget() {
   t('no items → no message', buildBudgetText_([]), '');
   console.log((pass === 11 ? 'PASS' : 'FAIL') + ': testBudget ' + pass + '/11');
 }
+
+/** /budget reply text for fixed data (no sheet needed). */
+function testBudgetCommand() {
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  const now = new Date(2026, 8, 28, 10, 0);
+  const c = function (name, type, budget) { return { name: name, type: type, keywords: [], budget: budget }; };
+  const cats = [c('Food', 'Expense', 100000), c('Health', 'Expense', 0), c('Transport', 'Expense', 50000),
+    c('Bills & Utilities', 'Expense', 0), c('Salary', 'Income', 999), c('Food', 'Expense', 5)];
+  const r = function (type, cat, amount, day, month) {
+    return { type: type, category: cat, amount: amount, date: new Date(2026, month === undefined ? 8 : month, day) };
+  };
+  const rows = [r('Expense', 'Food', 110000, 3), r('Expense', 'Transport', 20000, 4), r('Expense', 'Health', 30000, 5),
+    r('Expense', '', 5000, 6), r('Income', 'Salary', 5000000, 1), r('Expense', 'Food', 77000, 30, 7)];
+
+  const all = buildBudgetReport_(cats, rows, now, '', false).text;
+  t('header has the month', all.indexOf('Budgets · September 2026') !== -1, true);
+  t('over category flagged', /⚠️ <b>Food<\/b>: Spent Rp110\.000 of Rp100\.000 \(110%\) · over by Rp10\.000/.test(all), true);
+  t('under category', /• <b>Transport<\/b>: Spent Rp20\.000 of Rp50\.000 \(40%\) · Rp30\.000 left/.test(all), true);
+  t('no-budget category not listed', all.indexOf('<b>Health</b>') === -1, true);
+  t('total covers budgeted only', /Total budgeted<\/b>: Spent Rp130\.000 of Rp150\.000 \(87%\) · Rp20\.000 left/.test(all), true);
+  t('spending without a budget (Health + blank)', all.indexOf('Spending without a budget: Rp35.000') !== -1, true);
+  t('budget on Income ignored with warning', /Budgets on Salary are ignored/.test(all), true);
+  t('duplicate category warned', /Food appears more than once/.test(all), true);
+  t('August spending not counted', all.indexOf('77.000') === -1, true);
+
+  t('one category (any case, prefix)', /Transport · September 2026[\s\S]*40%/.test(buildBudgetReport_(cats, rows, now, 'trans', false).text), true);
+  t('one category without budget', /No budget set \(no limit\)\. Spent this month: Rp30\.000/.test(
+    buildBudgetReport_(cats, rows, now, 'health', false).text), true);
+  t('unknown category', /No category called "xyz"/.test(buildBudgetReport_(cats, rows, now, 'xyz', false).error), true);
+  t('income category refused', /Salary is an Income category/.test(buildBudgetReport_(cats, rows, now, 'salary', false).error), true);
+  t('no budgets at all', /No budgets set yet/.test(buildBudgetReport_([c('Food', 'Expense', 0)], rows, now, '', false).text), true);
+  t('hidden amounts', (buildBudgetReport_(cats, rows, now, 'transport', true).text.match(/<tg-spoiler>/g) || []).length, 3);
+  console.log((pass === 15 ? 'PASS' : 'FAIL') + ': testBudgetCommand ' + pass + '/15');
+}

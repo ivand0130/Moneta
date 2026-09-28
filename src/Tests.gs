@@ -643,8 +643,9 @@ function testDebtParser() {
     ['split 500k, budi, andi, aku', { ok: true, kind: 'split', total: 500000, me: 166668, category: null }],
     ['split makan. budi 100k, andi 100k, aku 200k', { ok: true, kind: 'split', note: 'makan', category: 'Food',
       total: 400000, me: 200000 }],
-    ['split 300rb makan, Budi, Andi', { kind: 'split', note: 'makan', category: 'Food', total: 300000, me: 100000 }],
-    ['split 1jt ivan, budi', { kind: 'split', note: '', total: 1000000, me: 333334 }],
+    ['split 300rb makan, Budi, Andi', { kind: 'split', note: 'makan', includeMe: false, total: 300000, me: 0 }],
+    ['split 300rb makan, Budi, Andi, aku', { kind: 'split', includeMe: true, total: 300000, me: 100000 }],
+    ['split 1jt ivan, budi', { kind: 'split', note: '', includeMe: false, total: 1000000, me: 0 }],
     ['piutang 500k aku, budi, ahok', { ok: true, kind: 'split', includeMe: true, total: 500000, me: 166668 }],
     ['split 400rb makan', { ok: false, error: 'split_no_people' }],
     ['piutang grup 600rb Budi', { ok: false, error: 'group_few_people' }],
@@ -666,7 +667,7 @@ function testDebtParser() {
   t('comma names: split makan. budi 100k, andi 100k, aku 200k',
     people(parseDebt_('split makan. budi 100k, andi 100k, aku 200k', ctx)), 'Budi 100000, Andi 100000'); // known contacts keep their saved names
   t('first comma part is a person unless it is a keyword', people(parseDebt_('split 1jt ivan, budi', ctx)),
-    'ivan 333333, Budi 333333');
+    'ivan 500000, Budi 500000'); // no aku/saya → I am not in the split
   t('piutang incl. me = split bill', people(parseDebt_('piutang 500k aku, budi, ahok', ctx)), 'Budi 166666, ahok 166666');
   t('several names = group', people(parseDebt_('piutang 600rb Budi, Andi, Citra', ctx)), 'Budi 200000, Andi 200000, Citra 200000');
   t('"bayar listrik 200rb" is not a debt', parseDebt_('bayar listrik 200rb', ctx), null);

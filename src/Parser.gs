@@ -954,7 +954,8 @@ function parseDebt_(text, ctx) {
     if (kind === 'new' && people.length < 2) return { ok: false, error: 'group_few_people' };
     if (unclear(totalAmt) || slots.some(function (s) { return unclear(s.amount); })) return { ok: false, error: 'debt_amount_unclear' };
     const meSlot = slots.filter(function (s) { return s.isMe; })[0];
-    const includeMe = kind === 'split' && !notMe;
+    // I'm only in the split when I write aku / saya (e.g. "termasuk saya") — owner's rule.
+    const includeMe = kind === 'split' && !notMe && !!meSlot;
     let category = null;
     let categoryHow = '';
     if (kind === 'split') {

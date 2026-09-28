@@ -109,7 +109,8 @@ function stepDebt_(p, ctx) {
     return showStep_(p, '🤝 ' + (d.debtType === 'Piutang' ? 'Who are you lending to?' : 'Who are you borrowing from?') +
       '\nSend the name.', [cancelRow_(p)]);
   }
-  if (d.kind === 'split' && !d.category) return askDebtCategory_(p, ctx, 'Expense', 'Which category is your share?');
+  // A category is only needed for MY share (a split without me is all piutang).
+  if (d.kind === 'split' && d.includeMe && !d.category) return askDebtCategory_(p, ctx, 'Expense', 'Which category is your share?');
   if (d.kind === 'convert' && !d.category) {
     // Suggest the record's own category (e.g. Food from a split bill) when it fits; the preview confirms it.
     const own = findDebtById_(ctx.debts, d.recordId);

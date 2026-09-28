@@ -289,7 +289,9 @@ Decisions made in Phase 4 (owner):
   direction]. The Settlement row is capped at the remaining amount
 - Equal split: friends get the amount rounded down, I take the leftover
   (400rb / 3 → 133.333 + 133.333 + me 133.334). Without me, the first person
-  takes it. A split always includes me unless "tanpa saya"
+  takes it. I am in a split ONLY when I write aku / saya (e.g. "termasuk
+  saya", "…, aku 200k"); otherwise the whole bill becomes piutang for the
+  others and no category is asked (owner's rule)
 - Names: matched against Contacts (name or alias, any case). A new name in a
   new debt is shown as "New contact" and added to Contacts on save. In a
   split, unknown names must start with a capital letter (lowercase words are
@@ -306,7 +308,7 @@ Decisions made in Phase 4 (owner):
   names must be Capitalized ("split 400rb makan Budi Andi termasuk saya").
   Without a full stop, every comma part is a person; a word in the first
   part is only the note if it is a category keyword ("split 300rb makan,
-  Budi, Andi"), so "split ivan, budi" = ivan, budi and me. No category
+  Budi, Andi"), so "split ivan, budi" = ivan and budi. No category
   found → the bot asks
 - Including myself in a piutang ("piutang 500k aku, budi, ahok") makes it a
   split bill: split 3 ways, my share is an expense (category asked), the

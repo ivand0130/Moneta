@@ -249,7 +249,7 @@ function buildHelpText_() {
     '• <code>piutang 500rb Budi</code> (you lend) · <code>pinjam 1jt dari Andi</code> (you borrow)',
     '• <code>… jatuh tempo 30/10</code> · <code>piutang jangka panjang 10jt Budi</code>',
     '• <code>piutang 600rb Budi, Andi, Citra</code> (group) · <code>split makan. budi 100k, andi 100k, aku 200k</code>',
-    '• <code>split 400rb makan Budi Andi termasuk saya</code> (commas or capital letters mark names)',
+    '• <code>split 400rb makan Budi Andi termasuk saya</code> (add aku / saya to include yourself)',
     '• <code>Budi bayar 200rb</code> (nearest due date first) · <code>bayar hutang Andi 500rb</code> · <code>Budi lunas</code>',
     '• <code>tambah piutang Budi 100rb</code> · <code>tutup piutang PTG-001</code> (turn it into an expense)',
     '',

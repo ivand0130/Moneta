@@ -304,8 +304,13 @@ Decisions made in Phase 4 (owner):
   "split makan. budi 100k, andi 100k, aku 200k" → note/category from
   "makan", people budi 100k, andi 100k, me 200k. Without commas, a split's
   names must be Capitalized ("split 400rb makan Budi Andi termasuk saya").
-  In a comma split without a full stop, words in the first part are the note
-  ("split 300rb bakso, Budi, Andi"). No category found → the bot asks
+  Without a full stop, every comma part is a person; a word in the first
+  part is only the note if it is a category keyword ("split 300rb makan,
+  Budi, Andi"), so "split ivan, budi" = ivan, budi and me. No category
+  found → the bot asks
+- Including myself in a piutang ("piutang 500k aku, budi, ahok") makes it a
+  split bill: split 3 ways, my share is an expense (category asked), the
+  others get a piutang each
 - A missing amount or total is ASKED for; the entry is kept while waiting
   ("piutang split kia, melvern" → "How much in total?" → "1jt")
 - Payment to someone with several open records needs no question: it is

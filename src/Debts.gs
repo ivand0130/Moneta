@@ -94,7 +94,7 @@ function stepDebt_(p, ctx) {
   if (d.needsTotal) {
     p.awaitText = 'total';
     return showStep_(p, debtSummary_(p) + '\nHow much in total? It will be split between ' + d.people.length +
-      (d.includeMe ? ' people and you' : ' people') + '. E.g. <code>500rb</code>.', [cancelRow_(p)]);
+      (d.people.length === 1 ? ' person' : ' people') + (d.includeMe ? ' and you' : '') + '. E.g. <code>500rb</code>.', [cancelRow_(p)]);
   }
   if (d.needsAmount) {
     p.awaitText = 'amount';

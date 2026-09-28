@@ -857,11 +857,17 @@ function parseDebt_(text, ctx) {
       const inSeg = function (i) { return idx.indexOf(i) !== -1; };
       const contact = contacts.filter(function (c) { return inSeg(c.index); })[0];
       const me = meTokens.filter(inSeg)[0];
-      const words = idx.filter(function (i) { return !tokens[i].used && wordy(tokens[i]) && i < noteAt; });
+      let words = idx.filter(function (i) { return !tokens[i].used && wordy(tokens[i]) && i < noteAt; });
       const segAmounts = amounts.filter(function (a) { return inSeg(a.tokens[0]); });
-      // The header, or (in a split without a full stop) a first part with no known name, is not a person.
-      const isHeader = s === 'H' || (s === 0 && periodAt === -1 && kind === 'split' && !contact);
-      if (isHeader || (!contact && me === undefined && words.length === 0)) {
+      // Before a full stop = the header (note / category). Without a full stop, a word in the first
+      // part is the note only if it is a category keyword ("split 300rb bakso, Budi, Andi");
+      // any other word there is a person ("split ivan, budi" → ivan and budi).
+      if (s === 0 && periodAt === -1 && !contact) {
+        const noteLike = words.filter(function (i) { return matchKeyword_(tokens[i].clean, ctx.categories, ['Expense']); });
+        noteLike.forEach(function (i) { noteWords.push(tokens[i].raw); });
+        words = words.filter(function (i) { return noteLike.indexOf(i) === -1; });
+      }
+      if (s === 'H' || (!contact && me === undefined && words.length === 0)) {
         words.forEach(function (i) { noteWords.push(tokens[i].raw); });
         segAmounts.forEach(function (a) { totals.push(a); });
         return;
@@ -926,6 +932,11 @@ function parseDebt_(text, ctx) {
   const people = slots.filter(function (s) { return !s.isMe; });
   // Several people in a piutang/hutang = a group ("piutang 600rb Budi, Andi, Citra").
   if (kind === 'new' && people.length >= 2) group = true;
+  // Including myself ("piutang 500k aku, budi, ahok") makes it a split bill: my share is an expense.
+  if (kind === 'new' && debtType === 'Piutang' && slots.some(function (s) { return s.isMe; }) && people.length >= 1) {
+    kind = 'split';
+    group = false;
+  }
 
   if (totals.length > 1) return { ok: false, error: 'multiple_amounts', amounts: totals.map(function (a) { return a.text; }) };
   const totalAmt = totals[0] || null;

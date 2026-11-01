@@ -21,6 +21,8 @@ const FMT = {
 };
 
 const HEADER_BG = '#dbe5f1';
+// Wallet Types whose balance comes from Investment_Details (the old "Investment" counts as Others).
+const INV_WALLET_TYPE_RE = '^(Emas|Saham|Others|Investment)$';
 const FORMULA_HEADER_BG = '#d9ead3';
 
 /**
@@ -72,15 +74,17 @@ function getSchema_() {
       { h: 'Wallet' },
       { h: 'Wallet Group', ref: [T.SETTINGS, 'Wallet Groups'] },
       { h: 'Wallet Type', list: LISTS.WALLET_TYPES },
+      // Investment wallets only: every investment held in this wallet gets this category.
+      { h: 'Investment Category', ref: [T.SETTINGS, 'Investment Categories'], w: 150 },
       { h: 'Opening Balance', fmt: FMT.RP },
       { h: 'Current Balance', fmt: FMT.RP, w: 140, formula: function (r) {
         // Cash wallets: opening + in − out − transfers out + transfers in.
-        // Investment wallets: current value of their Investments rows.
+        // Investment wallets (Emas / Saham / Others): current value of the Investment_Details rows they hold.
         const W = T.WALLETS, X = T.TRANSACTIONS, I = T.INVESTMENTS;
         const amt = r(X, 'Amount'), wal = r(X, 'Wallet'), dir = r(X, 'Direction'), to = r(X, 'To Wallet');
         return 'MAP(' + r(W, 'Wallet') + ',' + r(W, 'Wallet Type') + ',' + r(W, 'Opening Balance') +
-          ',LAMBDA(w,t,o,IF(w="",,IF(t="Investment",SUMIFS(' + r(I, 'Current Value') + ',' +
-          r(I, 'Investment Category') + ',w),N(o)' +
+          ',LAMBDA(w,t,o,IF(w="",,IF(REGEXMATCH(t&"","' + INV_WALLET_TYPE_RE + '"),SUMIFS(' + r(I, 'Current Value') + ',' +
+          r(I, 'Investment Wallet') + ',w),N(o)' +
           '+SUMIFS(' + amt + ',' + wal + ',w,' + dir + ',"In")' +
           '-SUMIFS(' + amt + ',' + wal + ',w,' + dir + ',"Out")' +
           '-SUMIFS(' + amt + ',' + wal + ',w,' + dir + ',"Transfer")' +
@@ -145,11 +149,42 @@ function getSchema_() {
       { h: 'Snoozed Until', fmt: FMT.DATE }
     ] },
 
+    // One row per asset (several purchases → one line, average prices). All formulas from Investment_Details.
+    { name: T.INV_SUMMARY, columns: [
+      { h: 'Investment Category', w: 150, formula: function (r) { return 'IFERROR(INDEX(' + invAssetPairs_(r) + ',,1))'; } },
+      { h: 'Asset Name', w: 140, formula: function (r) { return 'IFERROR(INDEX(' + invAssetPairs_(r) + ',,2))'; } },
+      { h: 'Unit', w: 70, formula: function (r) {
+        const I = T.INVESTMENTS;
+        return perAsset_(r, 'IFERROR(INDEX(FILTER(' + r(I, 'Unit') + ',' + r(I, 'Asset Name') + '=a),1))');
+      } },
+      { h: 'Qty Bought', w: 90, formula: function (r) {
+        const A = T.INV_SUMMARY;
+        return 'MAP(' + r(A, 'Asset Name') + ',' + r(A, 'Qty Held') + ',' + r(A, 'Qty Sold') + ',LAMBDA(a,h,s,IF(a="",,N(h)+N(s))))';
+      } },
+      { h: 'Qty Sold', w: 90, formula: function (r) { return detailSumOf_(r, 'Qty Sold'); } },
+      { h: 'Qty Held', w: 90, formula: function (r) { return detailSumOf_(r, 'Quantity'); } },
+      { h: 'Avg Buy Price', fmt: FMT.RP, formula: function (r) { return perPrice_(r, 'Total Cost', 'Qty Bought'); } },
+      { h: 'Total Cost', fmt: FMT.RP, formula: function (r) { return detailSumOf_(r, 'Acquisition Cost'); } },
+      { h: 'Avg Sell Price', fmt: FMT.RP, formula: function (r) { return perPrice_(r, 'Sold Value', 'Qty Sold'); } },
+      { h: 'Sold Value', fmt: FMT.RP, formula: function (r) { return detailSumOf_(r, 'Sold Value'); } },
+      { h: 'Current Price', fmt: FMT.RP, formula: function (r) { return perPrice_(r, 'Current Value', 'Qty Held'); } },
+      { h: 'Current Value', fmt: FMT.RP, formula: function (r) { return detailSumOf_(r, 'Current Value'); } },
+      { h: 'Floating Gain', fmt: FMT.RP, redIfNegative: true, formula: function (r) { return detailSumOf_(r, 'Gain/Loss (Rp)'); } },
+      { h: 'Realized Gain', fmt: FMT.RP, redIfNegative: true, formula: function (r) { return detailSumOf_(r, 'Realized Gain'); } },
+      { h: 'Total Gain/Loss (Rp)', fmt: FMT.RP, redIfNegative: true, formula: function (r) {
+        const A = T.INV_SUMMARY;
+        return 'MAP(' + r(A, 'Asset Name') + ',' + r(A, 'Floating Gain') + ',' + r(A, 'Realized Gain') +
+          ',LAMBDA(a,u,x,IF(a="",,N(u)+N(x))))';
+      } },
+      { h: 'Total Gain/Loss (%)', fmt: FMT.PCT, formula: function (r) { return perUnit_(r, 'Total Gain/Loss (Rp)', 'Total Cost'); } }
+    ] },
+
     { name: T.INVESTMENTS, columns: [
       { h: 'Inv ID', w: 90 },
       { h: 'Link ID', w: 90 },
       { h: 'Investment Date', fmt: FMT.DATE },
       { h: 'Investment Category', ref: [T.SETTINGS, 'Investment Categories'], w: 150 },
+      { h: 'Investment Wallet', ref: [T.WALLETS, 'Wallet'], w: 140 }, // holds it: the wallet's balance sums these rows
       { h: 'Asset Name', w: 140 },
       { h: 'Platform' },
       { h: 'Unit', list: LISTS.UNITS, w: 80 },
@@ -167,6 +202,26 @@ function getSchema_() {
         return 'ARRAYFORMULA(IF(' + qtyOf_(r) + '="",,IF(' + costOf_(r) + '=0,,(' + valueOf_(r) + '-' +
           costOf_(r) + ')/(' + costOf_(r) + '))))';
       } },
+      // Sold part (from Investment_Sales by Inv ID). Quantity above = what is still held.
+      { h: 'Qty Sold', w: 90, formula: function (r) { return salesSumOf_(r, 'Quantity Sold'); } },
+      { h: 'Sold Value', fmt: FMT.RP, formula: function (r) { return salesSumOf_(r, 'Proceeds'); } },
+      { h: 'Avg Sell Price', fmt: FMT.RP, formula: function (r) {
+        const I = T.INVESTMENTS;
+        return 'MAP(' + r(I, 'Inv ID') + ',' + r(I, 'Qty Sold') + ',' + r(I, 'Sold Value') + ',' + r(I, 'Unit') +
+          ',LAMBDA(i,q,v,u,IF(OR(i="",N(q)=0),,N(v)/(N(q)*IF(u="lot",100,1)))))';
+      } },
+      { h: 'Realized Gain', fmt: FMT.RP, redIfNegative: true, formula: function (r) { return salesSumOf_(r, 'Realized Gain'); } },
+      // Total = realized (sold part) + unrealized (held part at the current price), vs the whole acquisition cost.
+      { h: 'Total Gain/Loss (Rp)', fmt: FMT.RP, redIfNegative: true, formula: function (r) {
+        const I = T.INVESTMENTS;
+        return 'MAP(' + r(I, 'Inv ID') + ',' + r(I, 'Gain/Loss (Rp)') + ',' + r(I, 'Realized Gain') +
+          ',LAMBDA(i,g,x,IF(i="",,N(g)+N(x))))';
+      } },
+      { h: 'Total Gain/Loss (%)', fmt: FMT.PCT, formula: function (r) {
+        const I = T.INVESTMENTS;
+        return 'MAP(' + r(I, 'Inv ID') + ',' + r(I, 'Total Gain/Loss (Rp)') + ',' + r(I, 'Acquisition Cost') +
+          ',LAMBDA(i,t,c,IF(OR(i="",N(c)=0),,N(t)/N(c))))';
+      } },
       { h: 'Last Price Update', fmt: FMT.DATE },
       { h: 'Source Wallet', ref: [T.WALLETS, 'Wallet'] },
       { h: 'Status', list: LISTS.INV_STATUSES, w: 110 }
@@ -180,17 +235,19 @@ function getSchema_() {
       { h: 'Sale Price', fmt: FMT.RP },
       { h: 'Proceeds', fmt: FMT.RP, formula: function (r) {
         const S = T.SALES;
-        return 'ARRAYFORMULA(IF(' + r(S, 'Quantity Sold') + '="",,' + r(S, 'Quantity Sold') + '*' + r(S, 'Sale Price') + '))';
+        return 'ARRAYFORMULA(IF(' + r(S, 'Quantity Sold') + '="",,' + r(S, 'Quantity Sold') + '*' + saleLotMult_(r) + '*' +
+          r(S, 'Sale Price') + '))';
       } },
       { h: 'Fees', fmt: FMT.RP },
       { h: 'Realized Gain', fmt: FMT.RP, formula: function (r) {
-        // proceeds − fees − quantity × acquisition price of the purchase row
-        const S = T.SALES, I = T.INVESTMENTS, q = r(S, 'Quantity Sold');
-        return 'ARRAYFORMULA(IF(' + q + '="",,IFERROR(' + q + '*' + r(S, 'Sale Price') + '-' + r(S, 'Fees') +
+        // proceeds − fees − quantity × acquisition price of the purchase row (×100 for lots)
+        const S = T.SALES, I = T.INVESTMENTS, q = r(S, 'Quantity Sold') + '*' + saleLotMult_(r);
+        return 'ARRAYFORMULA(IF(' + r(S, 'Quantity Sold') + '="",,IFERROR(' + q + '*' + r(S, 'Sale Price') + '-' + r(S, 'Fees') +
           '-' + q + '*VLOOKUP(' + r(S, 'Inv ID') + ',{' + r(I, 'Inv ID') + ',' + r(I, 'Acquisition Price') +
           '},2,FALSE),"Check Inv ID")))';
       } },
-      { h: 'To Wallet', ref: [T.WALLETS, 'Wallet'] }
+      { h: 'To Wallet', ref: [T.WALLETS, 'Wallet'] },
+      { h: 'Link ID', w: 90 }
     ] },
 
     { name: T.PRICES, columns: [
@@ -262,9 +319,7 @@ function getSchema_() {
         const n = r(T.SETTINGS, 'Display Name');
         return '{"Shared";IFERROR(FILTER(' + n + ',' + n + '<>""))}';
       } },
-      { h: 'Investment Categories', w: 170, formula: function (r) {
-        return 'IFERROR(FILTER(' + r(T.CATEGORIES, 'Category') + ',' + r(T.CATEGORIES, 'Type') + '="Investment"))';
-      } },
+      { h: 'Investment Categories', w: 170 }, // typed list; each investment wallet picks one (Wallets → Investment Category)
       { h: 'Wallet Groups', w: 130 }
     ] },
 
@@ -304,13 +359,78 @@ function debtSumFormula_(r, col, value) {
 // Investment formula pieces: remaining quantity, value at current price
 // (falls back to acquisition price until a price is entered), and cost.
 function qtyOf_(r) { return r(TAB.INVESTMENTS, 'Quantity'); }
+/** ×100 for stock rows (Unit "lot": quantity in lots, prices per lembar), else ×1. */
+function lotMultOf_(r) {
+  return 'IF(' + r(TAB.INVESTMENTS, 'Unit') + '="lot",100,1)';
+}
 function valueOf_(r) {
   const I = TAB.INVESTMENTS;
-  return r(I, 'Quantity') + '*IF(' + r(I, 'Current Price') + '="",' + r(I, 'Acquisition Price') + ',' +
+  return r(I, 'Quantity') + '*' + lotMultOf_(r) + '*IF(' + r(I, 'Current Price') + '="",' + r(I, 'Acquisition Price') + ',' +
     r(I, 'Current Price') + ')';
 }
 function costOf_(r) {
-  return r(TAB.INVESTMENTS, 'Quantity') + '*' + r(TAB.INVESTMENTS, 'Acquisition Price');
+  return r(TAB.INVESTMENTS, 'Quantity') + '*' + lotMultOf_(r) + '*' + r(TAB.INVESTMENTS, 'Acquisition Price');
+}
+
+/** Investment_Sales: ×100 when the purchase row (by Inv ID) is a lot row. */
+function saleLotMult_(r) {
+  const I = TAB.INVESTMENTS, S = TAB.SALES;
+  return 'IF(IFERROR(VLOOKUP(' + r(S, 'Inv ID') + ',{' + r(I, 'Inv ID') + ',' + r(I, 'Unit') + '},2,FALSE))="lot",100,1)';
+}
+
+/** Per Inv ID: the sum of an Investment_Sales column for that purchase. */
+function salesSumOf_(r, salesHeader) {
+  const I = TAB.INVESTMENTS, S = TAB.SALES;
+  return 'MAP(' + r(I, 'Inv ID') + ',LAMBDA(i,IF(i="",,SUMIFS(' + r(S, salesHeader) + ',' + r(S, 'Inv ID') + ',i))))';
+}
+
+/** The distinct (category, asset) pairs of Investment_Details, sorted. */
+function invAssetPairs_(r) {
+  const I = TAB.INVESTMENTS;
+  return 'SORT(UNIQUE(FILTER({' + r(I, 'Investment Category') + ',' + r(I, 'Asset Name') + '},' + r(I, 'Asset Name') + '<>"")))';
+}
+
+/** A formula per asset row of the Investments summary (a = the asset name). */
+function perAsset_(r, expr) {
+  return 'MAP(' + r(TAB.INV_SUMMARY, 'Asset Name') + ',LAMBDA(a,IF(a="",,' + expr + ')))';
+}
+
+/** Per asset: the sum of an Investment_Details column over all its purchases. */
+function detailSumOf_(r, header) {
+  const I = TAB.INVESTMENTS;
+  return perAsset_(r, 'SUMIFS(' + r(I, header) + ',' + r(I, 'Asset Name') + ',a)');
+}
+
+/** Per asset: one summary column divided by another (blank when the divisor is 0). */
+function perUnit_(r, top, bottom) {
+  const A = TAB.INV_SUMMARY;
+  return 'MAP(' + r(A, 'Asset Name') + ',' + r(A, top) + ',' + r(A, bottom) + ',LAMBDA(a,t,b,IF(OR(a="",N(b)=0),,N(t)/N(b))))';
+}
+
+/** Per asset: a money column ÷ a quantity column = price per lembar (lots ×100) / gr / unit. */
+function perPrice_(r, top, bottom) {
+  const A = TAB.INV_SUMMARY;
+  return 'MAP(' + r(A, 'Asset Name') + ',' + r(A, top) + ',' + r(A, bottom) + ',' + r(A, 'Unit') +
+    ',LAMBDA(a,t,b,u,IF(OR(a="",N(b)=0),,N(t)/(N(b)*IF(u="lot",100,1)))))';
+}
+
+/** Dashboard AE3: the investment categories (Settings list). */
+function dashboardInvCategoriesFormula_(r) {
+  const list = r(TAB.SETTINGS, 'Investment Categories');
+  return '=IFERROR(FILTER(' + list + ',' + list + '<>""))';
+}
+
+/** Dashboard: wallet groups of cash wallets and their balance (AB3 / AC3). */
+function dashboardGroupFormulas_(r) {
+  const W = TAB.WALLETS;
+  // (REGEXMATCH(…)=FALSE) works element by element inside FILTER / SUMPRODUCT; NOT() may not.
+  const cash = '(REGEXMATCH(' + r(W, 'Wallet Type') + '&"","' + INV_WALLET_TYPE_RE + '")=FALSE)';
+  // A wallet can be in several groups ("Spending, Investment Wallet"); it counts in the first one.
+  const home = 'TRIM(REGEXEXTRACT(' + r(W, 'Wallet Group') + '&"","^[^,]*"))';
+  return {
+    groups: '=IFERROR(UNIQUE(FILTER(' + home + ',' + r(W, 'Wallet Group') + '<>"",' + cash + ')))',
+    balances: '=MAP(AB3:AB30,LAMBDA(g,IF(g="",,SUMPRODUCT((' + home + '=g)*' + cash + ',' + r(W, 'Current Balance') + '))))'
+  };
 }
 
 /** 1 → A, 27 → AA */
@@ -350,6 +470,7 @@ function makeRangeResolver_(schema) {
  * and saves both IDs in Script Properties.
  */
 function createTemplate() {
+  headerCacheOff_ = true; // this function changes or checks headers: always read them fresh
   if (getProp_(PROP.MAIN_SHEET_ID) !== null || getProp_(PROP.TEMPLATE_ID) !== null) {
     throw new Error('MAIN_SHEET_ID or TEMPLATE_ID is already set, so createTemplate stopped ' +
       'to avoid making duplicates. To rebuild, delete both Script Properties first ' +
@@ -391,6 +512,7 @@ function createTemplate() {
  * already has transactions, so real data can't be thrown away by accident.
  */
 function resetSheets() {
+  headerCacheOff_ = true; // this function changes or checks headers: always read them fresh
   const mainId = getProp_(PROP.MAIN_SHEET_ID);
   const templateId = getProp_(PROP.TEMPLATE_ID);
   if (mainId !== null) {
@@ -627,7 +749,8 @@ function upgradeMissingTabs_(ss) {
     const locale = ss.getSpreadsheetLocale();
     ss.setSpreadsheetLocale('en_US'); // in case the tab has formula columns
     try {
-      const sheet = ss.insertSheet(tab.name, ss.getSheets().length);
+      const details = tab.name === TAB.INV_SUMMARY ? ss.getSheetByName(TAB.INVESTMENTS) : null;
+      const sheet = ss.insertSheet(tab.name, details ? details.getIndex() - 1 : ss.getSheets().length);
       setupTab_(ss, sheet, tab, makeSheetResolver_(ss));
       SpreadsheetApp.flush();
     } finally {
@@ -649,9 +772,13 @@ function upgradeMissingColumns_(ss, tabName) {
   if (sheet === null) return tabName + ': tab not found';
   const cols = getSchema_().filter(function (t) { return t.name === tabName; })[0].columns;
   const added = [];
+  const locale = ss.getSpreadsheetLocale();
+  ss.setSpreadsheetLocale('en_US'); // formula columns use English syntax
+  try {
   cols.forEach(function (c, i) {
+    SpreadsheetApp.flush(); // earlier formula headers must be readable before later ones refer to them
     const map = getHeaderMap_(sheet);
-    if (c.formula || c.h === '' || map[c.h.toLowerCase()] !== undefined) return;
+    if (c.h === '' || map[c.h.toLowerCase()] !== undefined) return;
     let after = sheet.getLastColumn(); // 1-based column to insert after
     for (let k = i - 1; k >= 0; k--) {
       if (map[cols[k].h.toLowerCase()] !== undefined) { after = map[cols[k].h.toLowerCase()] + 1; break; }
@@ -667,9 +794,237 @@ function upgradeMissingColumns_(ss, tabName) {
       data.setDataValidation(SpreadsheetApp.newDataValidation()
         .requireValueInList(c.list, true).setAllowInvalid(true).build());
     }
+    if (c.formula) {
+      SpreadsheetApp.flush();
+      setupFormulaColumn_(sheet, col, c, makeSheetResolver_(ss));
+    }
     added.push(c.h);
   });
+  SpreadsheetApp.flush();
+  } finally {
+    ss.setSpreadsheetLocale(locale);
+  }
   return tabName + ': ' + (added.length ? 'added ' + added.join(', ') : 'columns already up to date');
+}
+
+/**
+ * Phase 6: the old "Investments" tab (one row per purchase) becomes
+ * "Investment_Details"; a new "Investments" tab (one row per asset) is then
+ * added by upgradeMissingTabs_. Formulas that refer to the tab follow the
+ * rename automatically.
+ */
+function renameInvestmentDetails_(ss) {
+  if (ss.getSheetByName(TAB.INVESTMENTS) !== null) return 'Investment_Details: already there';
+  const old = ss.getSheetByName(TAB.INV_SUMMARY);
+  if (old === null || getHeaderMap_(old)['inv id'] === undefined) return 'Investment_Details: nothing to rename';
+  old.setName(TAB.INVESTMENTS);
+  SpreadsheetApp.flush();
+  return 'renamed "' + TAB.INV_SUMMARY + '" → "' + TAB.INVESTMENTS + '"';
+}
+
+/**
+ * Phase 6 wallet types: Wallet Type dropdown = Cash / Emas / Saham / Others;
+ * wallets with the old type "Investment" get Emas / Saham by name, else Others;
+ * the Current Balance formula and the Dashboard wallet-group formulas learn
+ * the new types.
+ */
+function upgradeWalletTypes_(ss) {
+  const sheet = ss.getSheetByName(TAB.WALLETS);
+  const done = [];
+  const locale = ss.getSpreadsheetLocale();
+  ss.setSpreadsheetLocale('en_US');
+  try {
+    const map = getHeaderMap_(sheet);
+    const typeCol = map['wallet type'] + 1;
+    sheet.getRange(2, typeCol, sheet.getMaxRows() - 1, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+      .requireValueInList(LISTS.WALLET_TYPES, true).setAllowInvalid(true).build());
+    const last = sheet.getLastRow();
+    if (last >= 2) {
+      const names = sheet.getRange(2, map['wallet'] + 1, last - 1, 1).getValues();
+      const range = sheet.getRange(2, typeCol, last - 1, 1);
+      const types = range.getValues();
+      let changed = 0;
+      types.forEach(function (t, i) {
+        if (!/^investment$/i.test(String(t[0]).trim())) return;
+        const n = String(names[i][0]).toLowerCase();
+        t[0] = /emas|gold|antam/.test(n) ? 'Emas' : /saham|stock/.test(n) ? 'Saham' : 'Others';
+        changed++;
+      });
+      if (changed) { range.setValues(types); done.push(changed + ' wallet type(s) set'); }
+    }
+    const balance = getSchema_().filter(function (t) { return t.name === TAB.WALLETS; })[0].columns
+      .filter(function (c) { return c.h === 'Current Balance'; })[0];
+    const balCol = map['current balance'] + 1;
+    const expected = '={"Current Balance";' + balance.formula(makeSheetResolver_(ss)) + '}';
+    if (sheet.getRange(1, balCol).getFormula() !== expected) {
+      sheet.getRange(1, balCol).setFormula(expected);
+      done.push('Current Balance formula updated');
+    }
+    const dash = ss.getSheetByName(TAB.DASHBOARD);
+    if (dash !== null && dash.getRange('AB2').getValue() === 'Wallet Group') {
+      const f = dashboardGroupFormulas_(makeSheetResolver_(ss));
+      dash.getRange('AB3').setFormula(f.groups);
+      dash.getRange('AC3').setFormula(f.balances);
+      if (dash.getRange('AE2').getValue() === 'Investment Category') dash.getRange('AE3').setFormula(dashboardInvCategoriesFormula_(makeSheetResolver_(ss)));
+      done.push('Dashboard wallet groups and investment categories updated');
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    ss.setSpreadsheetLocale(locale);
+  }
+  return 'Wallets: ' + (done.length ? done.join(', ') : 'already up to date');
+}
+
+/**
+ * Phase 6 (owner, final): stocks are kept in LOTS with prices per LEMBAR.
+ * - Unit share/lembar rows → lot: Quantity ÷100 (Investment_Sales too);
+ *   prices stay per lembar.
+ * - Unit lot rows whose prices are per lot (Acquisition Cost ≈ qty × price,
+ *   from the very first Phase 6 version) → prices ÷100 (Investment_Sales and
+ *   Price_History too).
+ * Values and Acquisition Cost don't change. Safe to run again (a converted
+ * row no longer matches either case).
+ */
+function convertStockRows_(ss) {
+  const inv = ss.getSheetByName(TAB.INVESTMENTS);
+  if (inv === null) return 'stocks: no Investment_Details tab';
+  const num = function (v) { return Number(v) || 0; };
+  const toLots = [];
+  const perLot = [];
+  readTableByHeaders_(inv, 'Asset Name').forEach(function (r) {
+    const unit = String(r['unit']).trim().toLowerCase();
+    const q = num(r['quantity']);
+    const p = num(r['acquisition price']);
+    const cost = num(r['acquisition cost']);
+    if (/^(share|shares|lembar|lbr)$/.test(unit)) toLots.push(r);
+    else if (/^lots?$/.test(unit) && q > 0 && p > 0 && Math.abs(cost - q * p) < Math.abs(cost - q * 100 * p)) perLot.push(r);
+  });
+  if (toLots.length + perLot.length === 0) return 'stocks: already in lots';
+  toLots.forEach(function (r) { writeRowsByHeaders_(inv, r._row, [{ 'Unit': 'lot', 'Quantity': num(r['quantity']) / 100 }]); });
+  perLot.forEach(function (r) {
+    const v = { 'Unit': 'lot', 'Acquisition Price': num(r['acquisition price']) / 100 };
+    if (r['current price'] !== '' && r['current price'] !== null) v['Current Price'] = num(r['current price']) / 100;
+    writeRowsByHeaders_(inv, r._row, [v]);
+  });
+  const ids = function (list) { return list.map(function (r) { return String(r['inv id']).trim(); }); };
+  const lotIds = ids(toLots);
+  const priceIds = ids(perLot);
+  const sales = ss.getSheetByName(TAB.SALES);
+  if (sales !== null) {
+    readTableByHeaders_(sales, 'Inv ID').forEach(function (r) {
+      const id = String(r['inv id']).trim();
+      if (lotIds.indexOf(id) !== -1) writeRowsByHeaders_(sales, r._row, [{ 'Quantity Sold': num(r['quantity sold']) / 100 }]);
+      if (priceIds.indexOf(id) !== -1) writeRowsByHeaders_(sales, r._row, [{ 'Sale Price': num(r['sale price']) / 100 }]);
+    });
+  }
+  const prices = ss.getSheetByName(TAB.PRICES);
+  if (prices !== null && priceIds.length) {
+    readTableByHeaders_(prices, 'Inv ID').filter(function (r) { return priceIds.indexOf(String(r['inv id']).trim()) !== -1; })
+      .forEach(function (r) { writeRowsByHeaders_(prices, r._row, [{ 'Price': num(r['price']) / 100 }]); });
+  }
+  return 'stocks: ' + [lotIds.length ? lotIds.join(', ') + ' lembar → lot' : '', priceIds.length ? priceIds.join(', ') + ' prices → per lembar' : '']
+    .filter(String).join('; ');
+}
+
+/**
+ * Rewrites the header formula of every formula column of a tab whose formula
+ * changed in the schema (e.g. the lot ×100 in Phase 6). Data is untouched.
+ */
+function refreshFormulas_(ss, tabName) {
+  const sheet = ss.getSheetByName(tabName);
+  if (sheet === null) return tabName + ': tab not found';
+  const cols = getSchema_().filter(function (t) { return t.name === tabName; })[0].columns.filter(function (c) { return c.formula; });
+  const done = [];
+  const locale = ss.getSpreadsheetLocale();
+  ss.setSpreadsheetLocale('en_US'); // formulas use English syntax
+  try {
+    cols.forEach(function (c) {
+      SpreadsheetApp.flush();
+      const col = getHeaderMap_(sheet)[c.h.toLowerCase()];
+      if (col === undefined) return;
+      const expected = '={"' + c.h + '";' + c.formula(makeSheetResolver_(ss)) + '}';
+      if (sheet.getRange(1, col + 1).getFormula() === expected) return;
+      sheet.getRange(1, col + 1).setFormula(expected);
+      done.push(c.h);
+    });
+    SpreadsheetApp.flush();
+  } finally {
+    ss.setSpreadsheetLocale(locale);
+  }
+  return tabName + ': ' + (done.length ? 'formulas updated (' + done.join(', ') + ')' : 'formulas up to date');
+}
+
+/**
+ * Settings → Investment Categories used to be a formula (Categories with Type
+ * Investment). It becomes a list you type: the current values stay as typed
+ * values, the formula and its protection go.
+ */
+function settingsInvCategoriesToList_(ss) {
+  const sheet = ss.getSheetByName(TAB.SETTINGS);
+  const col = getHeaderMap_(sheet)['investment categories'];
+  if (col === undefined) return 'Investment Categories: column not found';
+  const head = sheet.getRange(1, col + 1);
+  if (head.getFormula() === '') return 'Investment Categories: already a typed list';
+  const last = sheet.getLastRow();
+  const values = last >= 2 ? sheet.getRange(2, col + 1, last - 1, 1).getValues().filter(function (r) { return String(r[0]).trim() !== ''; }) : [];
+  head.setValue('Investment Categories').setBackground(HEADER_BG);
+  SpreadsheetApp.flush();
+  if (last >= 2) sheet.getRange(2, col + 1, last - 1, 1).clearContent();
+  if (values.length) sheet.getRange(2, col + 1, values.length, 1).setValues(values);
+  sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (pr) {
+    if (pr.getDescription() === 'Formula column: Investment Categories') pr.remove();
+  });
+  return 'Investment Categories: now a typed list (' + values.map(function (r) { return r[0]; }).join(', ') + ')';
+}
+
+/**
+ * Fills the new columns for data from before: an investment wallet without an
+ * Investment Category gets its own name (that was its category until now) and
+ * the name is added to the Settings list; an Investment_Details row without an
+ * Investment Wallet gets the wallet named in its Investment Category.
+ */
+function fillInvestmentWallets_(ss) {
+  const done = [];
+  const wallets = ss.getSheetByName(TAB.WALLETS);
+  const settings = ss.getSheetByName(TAB.SETTINGS);
+  const listed = readTableByHeaders_(settings, 'Investment Categories').map(function (r) { return String(r['investment categories']).trim().toLowerCase(); });
+  const toList = [];
+  if (getHeaderMap_(wallets)['investment category'] !== undefined) {
+    readTableByHeaders_(wallets, 'Wallet').forEach(function (r) {
+      if (!walletKind_(r['wallet type'])) return;
+      let cat = String(r['investment category'] || '').trim();
+      if (!cat) {
+        cat = String(r['wallet']).trim();
+        writeRowsByHeaders_(wallets, r._row, [{ 'Investment Category': cat }]);
+        done.push(cat + ' → category ' + cat);
+      }
+      if (listed.indexOf(cat.toLowerCase()) === -1 && toList.indexOf(cat) === -1) toList.push(cat);
+    });
+  }
+  if (toList.length) {
+    writeRowsByHeaders_(settings, lastDataRow_(settings, 'Investment Categories') + 1, toList.map(function (c) { return { 'Investment Categories': c }; }));
+    done.push('listed ' + toList.join(', '));
+  }
+  const inv = ss.getSheetByName(TAB.INVESTMENTS);
+  if (inv !== null && getHeaderMap_(inv)['investment wallet'] !== undefined) {
+    let n = 0;
+    readTableByHeaders_(inv, 'Asset Name').forEach(function (r) {
+      if (String(r['investment wallet'] || '').trim() !== '' || String(r['investment category'] || '').trim() === '') return;
+      writeRowsByHeaders_(inv, r._row, [{ 'Investment Wallet': String(r['investment category']).trim() }]);
+      n++;
+    });
+    if (n) done.push(n + ' Investment_Details row(s) got their Investment Wallet');
+  }
+  return 'investment wallets: ' + (done.length ? done.join('; ') : 'already filled');
+}
+
+/** Adds a name to the Settings → Wallet Groups helper list (the dropdown source) if it's missing. */
+function addWalletGroupOption_(ss, name) {
+  const sheet = ss.getSheetByName(TAB.SETTINGS);
+  const have = readTableByHeaders_(sheet, 'Wallet Groups').map(function (r) { return String(r['wallet groups']).trim().toLowerCase(); });
+  if (have.indexOf(name.toLowerCase()) !== -1) return 'Wallet Groups: "' + name + '" already listed';
+  writeRowsByHeaders_(sheet, lastDataRow_(sheet, 'Wallet Groups') + 1, [{ 'Wallet Groups': name }]);
+  return 'Wallet Groups: added "' + name + '"';
 }
 
 /**
@@ -678,10 +1033,23 @@ function upgradeMissingColumns_(ss, tabName) {
  * Safe to run more than once; your data and values are never changed.
  */
 function upgradeSheets() {
+  headerCacheOff_ = true; // this function changes or checks headers: always read them fresh
   [getProp_(PROP.MAIN_SHEET_ID), getProp_(PROP.TEMPLATE_ID)].forEach(function (id) {
     if (id === null) return;
     const ss = SpreadsheetApp.openById(id);
+    console.log(ss.getName() + ' → ' + renameInvestmentDetails_(ss));
+    if (ss.getSheetByName(TAB.INVESTMENTS) !== null) {
+      console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.SALES));
+      console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.INVESTMENTS));
+      console.log(ss.getName() + ' → ' + convertStockRows_(ss));
+    }
     console.log(ss.getName() + ' → ' + upgradeMissingTabs_(ss));
+    console.log(ss.getName() + ' → ' + settingsInvCategoriesToList_(ss));
+    console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.WALLETS));
+    console.log(ss.getName() + ' → ' + fillInvestmentWallets_(ss));
+    console.log(ss.getName() + ' → ' + upgradeWalletTypes_(ss));
+    [TAB.INVESTMENTS, TAB.SALES, TAB.INV_SUMMARY].forEach(function (t) { console.log(ss.getName() + ' → ' + refreshFormulas_(ss, t)); });
+    console.log(ss.getName() + ' → ' + addWalletGroupOption_(ss, 'Investment Wallet'));
     console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeDebtColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.FAVORITES));
@@ -695,18 +1063,18 @@ function writeSampleRows_(ss) {
   const get = function (name) { return ss.getSheetByName(name); };
 
   writeRowsByHeaders_(get(TAB.WALLETS), 2, [
-    ['BCA', 'Spending', 'Cash'],
+    ['BCA', 'Spending, Investment Wallet', 'Cash'],
     ['GoPay', 'Spending', 'Cash'],
     ['Cash', 'Spending', 'Cash'],
-    ['IPOT', 'Investment', 'Cash'],
+    ['IPOT', 'Investment, Investment Wallet', 'Cash'],
     ['Jago', 'Savings', 'Cash'],
-    ['Saham', 'Investment', 'Investment'],
-    ['Emas', 'Investment', 'Investment'],
-    ['Reksadana', 'Investment', 'Investment'],
-    ['Crypto', 'Investment', 'Investment'],
-    ['Deposito/Obligasi', 'Investment', 'Investment']
+    ['Saham', 'Investment', 'Saham'],
+    ['Emas', 'Investment', 'Emas'],
+    ['Reksadana', 'Investment', 'Others'],
+    ['Crypto', 'Investment', 'Others'],
+    ['Deposito/Obligasi', 'Investment', 'Others']
   ].map(function (w) {
-    return { 'Wallet': w[0], 'Wallet Group': w[1], 'Wallet Type': w[2],
+    return { 'Wallet': w[0], 'Wallet Group': w[1], 'Wallet Type': w[2], 'Investment Category': w[2] === 'Cash' ? '' : w[0],
       'Opening Balance': 0, 'Owner': 'Shared', 'Active': 'Yes' };
   }));
 
@@ -750,8 +1118,12 @@ function writeSampleRows_(ss) {
     { 'Chat ID': '', 'Display Name': 'Partner', 'GoPay Name': '', 'Active': 'Yes' }
   ]);
 
-  writeRowsByHeaders_(settings, 2, ['Spending', 'Savings', 'Investment'].map(function (g) {
+  writeRowsByHeaders_(settings, 2, ['Spending', 'Savings', 'Investment', 'Investment Wallet'].map(function (g) {
     return { 'Wallet Groups': g };
+  }));
+
+  writeRowsByHeaders_(settings, 2, ['Saham', 'Emas', 'Reksadana', 'Crypto', 'Deposito/Obligasi'].map(function (c) {
+    return { 'Investment Categories': c };
   }));
 }
 
@@ -762,6 +1134,7 @@ function writeSampleRows_(ss) {
  * values are never changed. Safe to run more than once.
  */
 function upgradeSettings() {
+  headerCacheOff_ = true; // this function changes or checks headers: always read them fresh
   [getProp_(PROP.MAIN_SHEET_ID), getProp_(PROP.TEMPLATE_ID)].forEach(function (id) {
     if (id === null) return;
     const ss = SpreadsheetApp.openById(id);
@@ -862,15 +1235,14 @@ function buildDashboard_(ss, sheet, r) {
 
   // Balance by wallet group, cash wallets only (AB:AC)
   sheet.getRange('AB2:AC2').setValues([['Wallet Group', 'Balance']]);
-  sheet.getRange('AB3').setFormula('=IFERROR(UNIQUE(FILTER(' + r(W, 'Wallet Group') + ',' + r(W, 'Wallet Group') +
-    '<>"",' + r(W, 'Wallet Type') + '<>"Investment")))');
-  sheet.getRange('AC3').setFormula('=MAP(AB3:AB30,LAMBDA(g,IF(g="",,SUMIFS(' + r(W, 'Current Balance') + ',' +
-    r(W, 'Wallet Group') + ',g,' + r(W, 'Wallet Type') + ',"<>Investment"))))');
+  const groupFormulas = dashboardGroupFormulas_(r);
+  sheet.getRange('AB3').setFormula(groupFormulas.groups);
+  sheet.getRange('AC3').setFormula(groupFormulas.balances);
   sheet.getRange('AC3:AC30').setNumberFormat(FMT.RP);
 
   // Investments by category (AE:AG)
   sheet.getRange('AE2:AG2').setValues([['Investment Category', 'Current Value', 'Gain/Loss']]);
-  sheet.getRange('AE3').setFormula('=IFERROR(FILTER(' + catName + ',' + catType + '="Investment"))');
+  sheet.getRange('AE3').setFormula(dashboardInvCategoriesFormula_(r));
   sheet.getRange('AF3').setFormula('=MAP(AE3:AE30,LAMBDA(c,IF(c="",,SUMIFS(' + r(I, 'Current Value') + ',' +
     r(I, 'Investment Category') + ',c))))');
   sheet.getRange('AG3').setFormula('=MAP(AE3:AE30,LAMBDA(c,IF(c="",,SUMIFS(' + r(I, 'Gain/Loss (Rp)') + ',' +
@@ -913,6 +1285,7 @@ function buildDashboard_(ss, sheet, r) {
  * Also used by /setsheet (later phase).
  */
 function validateSheet(spreadsheetId) {
+  headerCacheOff_ = true; // this function changes or checks headers: always read them fresh
   const id = typeof spreadsheetId === 'string' ? spreadsheetId : requireProp_(PROP.MAIN_SHEET_ID);
   const result = { ok: false, name: '', missingTabs: [], missingColumns: {}, error: '' };
 

@@ -90,14 +90,21 @@ function cancelRow_(p) {
 /** Sheet data every transaction step needs. */
 function loadCtx_() {
   const ss = openMainSheet_();
-  return {
+  const ctx = {
     ss: ss,
     wallets: loadWallets_(ss),
     categories: loadCategories_(ss),
-    contacts: loadContacts_(ss),
     investmentGroups: getSettingList_(SETTING.INVESTMENT_GROUPS),
     spendingGroups: getSettingList_(SETTING.SPENDING_GROUPS)
   };
+  // Contacts are read only when a flow needs them (debts), to save a sheet read.
+  let contacts = null;
+  Object.defineProperty(ctx, 'contacts', {
+    get: function () { return contacts || (contacts = loadContacts_(ss)); },
+    set: function (v) { contacts = v; },
+    enumerable: true
+  });
+  return ctx;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +116,9 @@ function startTransaction_(message) {
   const chatId = String(message.chat.id);
   const ctx = loadCtx_();
   // Exactly a favorite's name or keyword ("bayar mobil") → log that favorite (before debts: "bayar …").
+  // A message with a number in it is never just a name, so the Favorites tab isn't read then.
   const named = function () {
+    if (/\d/.test(message.text)) return null;
     return loadFavorites_(ctx.ss).filter(function (f) { return f.active && favMatchesText_(f, message.text); })[0];
   };
   let fav = named();
@@ -118,9 +127,11 @@ function startTransaction_(message) {
     fav = named();
   }
   if (fav) return startFavLog_(chatId, fav, ctx, null, false);
+  // "beli emas 2gr …" / "jual BBCA …" (only when it names an investment; "beli kopi 20rb" stays an expense).
+  if (maybeStartInvestment_(chatId, message.text, ctx)) return;
   // Hutang / piutang / split bill messages go to Debts.gs first.
-  const debt = parseDebt_(message.text, { wallets: ctx.wallets, categories: ctx.categories, contacts: ctx.contacts,
-    investmentGroups: ctx.investmentGroups, now: new Date() });
+  // Object.create keeps ctx.contacts lazy (read only if the parser needs it).
+  const debt = parseDebt_(message.text, Object.assign(Object.create(ctx), { now: new Date() }));
   if (debt) {
     ctx.debts = loadDebts_(ctx.ss);
     startDebt_(chatId, debt, ctx);
@@ -659,8 +670,13 @@ function saveTrx_(p, ctx, user) {
     if (!current || current.pid !== p.pid) return null; // double tap: already saved
     const sheet = ctx.ss.getSheetByName(TAB.TRANSACTIONS);
     const linkId = entries.length > 1 ? nextId_(sheet, 'Link ID', 'LNK') : '';
-    const ids = entries.map(function (e) { return writeTransaction_(ctx.ss, e, loggedBy, linkId); });
-    if (d.favId) markFavoriteLogged_(ctx.ss, d.favId, d.date);
+    // Every read first (next ID and row, the favorite's row), then the writes (faster: no recalculation in between).
+    const slot = nextTransactionSlot_(ctx.ss);
+    const favStep = d.favId ? prepareFavoriteLogged_(ctx.ss, d.favId, d.date) : null;
+    const ids = entries.map(function (e, i) {
+      return writeTransaction_(ctx.ss, e, loggedBy, linkId, { id: bumpId_(slot.id, i), row: slot.row + i });
+    });
+    if (favStep) favStep.commit();
     clearPending_(p.chatId);
     return { ids: ids, linkId: linkId };
   });
@@ -773,8 +789,9 @@ function startUndo_(chatId, user) {
   }
   // Hutang/piutang: a new record goes too; a conversion reopens its record; blocked if payments exist.
   const plan = debtUndoPlan_(ss, group, rows);
-  if (plan.blocked) {
-    sendMessage(chatId, "⛔ Can't undo yet. " + escapeHtml_(plan.blocked));
+  const invPlan = invUndoPlan_(ss, group);
+  if (plan.blocked || invPlan.blocked) {
+    sendMessage(chatId, "⛔ Can't undo yet. " + escapeHtml_(plan.blocked || invPlan.blocked));
     return;
   }
   const p = newPending_(chatId, 'undo', {
@@ -782,7 +799,9 @@ function startUndo_(chatId, user) {
   });
   const linked = group.length > 1;
   const extra = (plan.deleteDebts.length ? '\nAlso removes record ' + plan.deleteDebts.join(', ') + ' from Hutang_Piutang.' : '') +
-    (plan.reopen.length ? '\nReopens ' + plan.reopen.join(', ') + ' (the conversion is undone).' : '');
+    (plan.reopen.length ? '\nReopens ' + plan.reopen.join(', ') + ' (the conversion is undone).' : '') +
+    (invPlan.deleteInv.length ? '\nAlso removes ' + invPlan.deleteInv.join(', ') + ' from Investments.' : '') +
+    (invPlan.deleteSales.length ? '\nAlso removes sale ' + invPlan.deleteSales.join(', ') + ' and gives the quantity back.' : '');
   showStep_(p, '↩️ Delete your last entry' + (linked ? ' — it is a linked group of ' + group.length +
     ' entries, which are deleted together' : '') + '?\n' + group.map(describeRow_).join('\n') + escapeHtml_(extra),
     [[btn_(p, linked ? '🗑️ Delete all ' + group.length : '🗑️ Delete', 'y'), btn_(p, '❌ Cancel', 'n')]]);
@@ -795,9 +814,11 @@ function undoCallback_(p, action) {
   const rows = loadTransactions_(ss);
   const group = rows.filter(function (r) { return p.d.ids.indexOf(String(r['trx id']).trim()) !== -1; });
   const plan = debtUndoPlan_(ss, group, rows); // checked again: something may have been logged meanwhile
-  if (plan.blocked) return finishStep_(p, "⛔ Can't undo yet. " + escapeHtml_(plan.blocked));
+  const invPlan = invUndoPlan_(ss, group);
+  if (plan.blocked || invPlan.blocked) return finishStep_(p, "⛔ Can't undo yet. " + escapeHtml_(plan.blocked || invPlan.blocked));
   const deleted = deleteTransactions_(ss, p.d.ids);
   applyDebtUndo_(ss, plan);
+  applyInvUndo_(ss, invPlan);
   finishStep_(p, deleted.length ? '🗑️ Deleted ' + deleted.join(', ') +
     (plan.deleteDebts.length ? ' and record ' + plan.deleteDebts.join(', ') : '') +
     (plan.reopen.length ? '; ' + plan.reopen.join(', ') + (plan.reopen.length > 1 ? ' are' : ' is') + ' open again' : '') + '.' :
@@ -822,16 +843,31 @@ function stepWalletAdd_(p) {
   const tab = loadSettingsTab_();
   const title = '👛 New wallet <b>' + escapeHtml_(d.name) + '</b>';
   if (!d.group) {
+    // Several groups allowed: each tap ticks / unticks one, Done saves them as "Spending, Investment Wallet".
     p.opts = tab.walletGroups;
     if (p.opts.length === 0) return finishStep_(p, 'Add wallet groups in Settings → Wallet Groups first.');
-    const rows = chunk_(p.opts.map(function (g, i) { return btn_(p, g, 'g', i); }), 3);
-    rows.push(cancelRow_(p));
-    return showStep_(p, title + '\nWhich group?', rows);
+    d.picked = d.picked || [];
+    const rows = chunk_(p.opts.map(function (g, i) { return btn_(p, (d.picked.indexOf(g) !== -1 ? '✅ ' : '') + g, 'g', i); }), 3);
+    rows.push(d.picked.length ? [btn_(p, '✔️ Done', 'gd'), btn_(p, '❌ Cancel', 'n')] : cancelRow_(p));
+    return showStep_(p, title + '\nWhich group(s)? Tap one or more, then Done.' +
+      (d.picked.length ? '\nChosen: ' + escapeHtml_(d.picked.join(', ')) : '') +
+      '\n<i>The first one is its home group (where /saldo lists it). Add "Investment Wallet" if it pays for investments.</i>', rows);
   }
   if (!d.type) {
     return showStep_(p, title + '\nWhat kind of wallet?',
-      [[btn_(p, '💳 Cash / bank / e-wallet', 'wt', 'Cash')], [btn_(p, '📈 Investment category', 'wt', 'Investment')],
+      [[btn_(p, '💳 Cash / bank / e-wallet', 'wt', 'Cash')],
+       [btn_(p, '🥇 Emas (gram)', 'wt', 'Emas'), btn_(p, '📈 Saham (lembar)', 'wt', 'Saham'), btn_(p, '💼 Others', 'wt', 'Others')],
        cancelRow_(p)]);
+  }
+  if (d.type !== 'Cash' && !d.invCategory) {
+    p.opts = tab.invCategories || [];
+    if (p.opts.length === 0) return finishStep_(p, 'Add investment categories in Settings → Investment Categories first (e.g. Saham, Emas, Reksadana).');
+    d.cats = d.cats || [];
+    const rows = chunk_(p.opts.map(function (c, i) { return btn_(p, (d.cats.indexOf(c) !== -1 ? '✅ ' : '') + c, 'ic', i); }), 3);
+    rows.push(d.cats.length ? [btn_(p, '✔️ Done', 'icd'), btn_(p, '❌ Cancel', 'n')] : cancelRow_(p));
+    return showStep_(p, title + '\nWhich investment category? Tap one or more, then Done.' +
+      (d.cats.length ? '\nChosen: ' + escapeHtml_(d.cats.join(', ')) : '') +
+      '\n<i>With more than one, I ask which each time you buy into this wallet.</i>', rows);
   }
   if (!d.owner) {
     p.opts = tab.owners.length ? tab.owners : ['Shared'];
@@ -839,17 +875,31 @@ function stepWalletAdd_(p) {
     rows.push(cancelRow_(p));
     return showStep_(p, title + '\nWho owns it?', rows);
   }
-  showStep_(p, title + '\nGroup: ' + escapeHtml_(d.group) + '\nType: ' + d.type + '\nOwner: ' + escapeHtml_(d.owner) +
+  showStep_(p, title + '\nGroup: ' + escapeHtml_(d.group) + '\nType: ' + d.type +
+    (d.invCategory ? '\nInvestment category: ' + escapeHtml_(d.invCategory) : '') + '\nOwner: ' + escapeHtml_(d.owner) +
     '\nOpening balance: Rp0 (set it in the Wallets tab)' +
-    (d.type === 'Investment' ? '\nAn Investment category with the same name is added too.' : '') + '\n\nSave?',
+    '\n\nSave?',
     [[btn_(p, '✅ Yes', 'y'), btn_(p, '❌ No', 'n')]]);
 }
 
 function walletAddCallback_(p, action, arg) {
   const d = p.d;
   if (action === 'n') return finishStep_(p, '❌ Cancelled. No wallet added.');
-  if (action === 'g') d.group = p.opts[Number(arg)];
-  if (action === 'wt') d.type = arg === 'Investment' ? 'Investment' : 'Cash';
+  if (action === 'g') {
+    const g = p.opts[Number(arg)];
+    d.picked = d.picked || [];
+    const at = d.picked.indexOf(g);
+    if (at === -1) d.picked.push(g); else d.picked.splice(at, 1);
+  }
+  if (action === 'gd' && d.picked && d.picked.length) d.group = d.picked.join(', ');
+  if (action === 'wt') d.type = LISTS.WALLET_TYPES.indexOf(arg) !== -1 ? arg : 'Cash';
+  if (action === 'ic') {
+    const c = p.opts[Number(arg)];
+    d.cats = d.cats || [];
+    const at = d.cats.indexOf(c);
+    if (at === -1) d.cats.push(c); else d.cats.splice(at, 1);
+  }
+  if (action === 'icd' && d.cats && d.cats.length) d.invCategory = d.cats.join(', ');
   if (action === 'o') d.owner = p.opts[Number(arg)];
   if (action === 'y') {
     if (!claimPending_(p)) return;
@@ -932,6 +982,7 @@ function handleCallback_(cq) {
   else if (p.kind === 'debt') debtCallback_(p, action, arg, getUserByChatId_(chatId));
   else if (p.kind === 'contact') contactCallback_(p, action);
   else if (p.kind === 'fav') favCallback_(p, action, arg, getUserByChatId_(chatId));
+  else if (p.kind === 'inv') invCallback_(p, action, arg, getUserByChatId_(chatId));
 }
 
 /** Friendly reply for a message the parser couldn't use. */
@@ -955,7 +1006,8 @@ function parseErrorText_(r) {
     case 'same_wallet':
       return 'From and To are both ' + escapeHtml_(r.wallet) + '. A transfer needs two different wallets.';
     case 'investment_wallet':
-      return escapeHtml_(r.wallet) + ' is an investment wallet. Investment purchases arrive in a later update.';
+      return escapeHtml_(r.wallet) + ' is an investment wallet, not for expenses or income. To buy or sell write e.g. ' +
+        '<code>beli emas 2gr 1.350rb/gr dari BCA</code> or <code>jual BBCA 1 lot 10.200 ke BCA</code>.';
     case 'transfer_two_extras':
       return 'A transfer can have one extra part: a fee, a received amount, or money spent. Please send the ' +
         'others separately, e.g.\n• <code>transfer 1jt BCA ke GoPay admin 2.5rb</code>\n• <code>20rb makan GoPay</code>';

@@ -30,7 +30,8 @@ const TAB = {
   WALLETS: 'Wallets',
   CATEGORIES: 'Categories',
   DEBTS: 'Hutang_Piutang',
-  INVESTMENTS: 'Investments',
+  INV_SUMMARY: 'Investments',          // one row per asset (formulas), Phase 6
+  INVESTMENTS: 'Investment_Details',    // one row per purchase (was "Investments" before Phase 6)
   SALES: 'Investment_Sales',
   PRICES: 'Price_History',
   FAVORITES: 'Favorites',
@@ -52,7 +53,9 @@ const LISTS = {
   CATEGORY_SOURCES: ['Manual', 'Keyword', 'AI'],
   INPUT_SOURCES: ['Text', 'OCR', 'Favorite', 'Sheet'],
   CATEGORY_TYPES: ['Income', 'Expense', 'Investment', 'Adjustment'],
-  WALLET_TYPES: ['Cash', 'Investment'],
+  // Cash, or an investment wallet whose type sets the unit: Emas → gram, Saham → lembar, Others → typed.
+  // ("Investment" from before Phase 6 still works and counts as Others.)
+  WALLET_TYPES: ['Cash', 'Emas', 'Saham', 'Others'],
   DEBT_TYPES: ['Hutang', 'Piutang'],
   TERMS: ['Short', 'Long'],
   DEBT_STATUSES: ['Open', 'Partial', 'Paid', 'Converted'],
@@ -82,12 +85,15 @@ const SETTING = {
   ADJUST_AUTO_DELETE: 'Adjust auto-delete',
   OPEN_PASSWORD: 'Password for /open',
   OPEN_AUTO_DELETE: 'Open auto-delete',
+  INV_AUTO_DELETE: 'Inv auto-delete',
   SPENDING_GROUPS: 'Spending Wallet Groups',
   INVESTMENT_GROUPS: 'Investment Wallet Groups',
+  INV_SOURCE_GROUPS: 'Investment Source Groups',
   DAILY_REMINDER_TIME: 'Daily Reminder Time',
   WEEKLY_REMINDER_DAY: 'Weekly Reminder Day',
   MONTHLY_REMINDER_DATE: 'Monthly Reminder Date',
-  DEBT_DAYS_BEFORE_DUE: 'Debt Reminder Days Before Due'
+  DEBT_DAYS_BEFORE_DUE: 'Debt Reminder Days Before Due',
+  PRICE_REMINDER_TIME: 'Price Update Reminder Time'
 };
 
 /**
@@ -110,12 +116,14 @@ const SETTING_ROWS = [
   [SETTING.ADJUST_AUTO_DELETE, 'Yes', 'Yes = /adjust messages are deleted 60s after you finish (or when an unanswered preview expires). No = they stay.'],
   [SETTING.OPEN_PASSWORD, 'No', 'Yes = /open asks for the password (same as /saldo). No = /open shows right away.'],
   [SETTING.OPEN_AUTO_DELETE, 'Yes', 'Yes = the /open reply is deleted after 60s. No = it stays.'],
+  [SETTING.INV_AUTO_DELETE, 'Yes', 'Yes = the /inv reply is deleted after 60s. No = it stays.'],
   [SETTING.SPENDING_GROUPS, 'Spending', 'Wallet groups offered as buttons for expenses (comma-separated).'],
+  [SETTING.INV_SOURCE_GROUPS, 'Investment Wallet', 'Wallet groups whose wallets can pay for investments (and receive sale money). A wallet can be in several groups: write them comma-separated in Wallet Group, e.g. Spending, Investment Wallet.'],
   [SETTING.INVESTMENT_GROUPS, 'Investment', 'Wallet groups that hold investment money: not usable for expenses/income, hidden in /saldo (shown in /saldo all). Transfers are fine.'],
   [SETTING.DAILY_REMINDER_TIME, '08:00', 'Hour of the morning reminders: hutang/piutang and scheduled favorites (HH:MM, whole hours).'],
   [SETTING.WEEKLY_REMINDER_DAY, 'Monday', 'Day for the weekly summary reminder.'],
   [SETTING.MONTHLY_REMINDER_DATE, '1', 'Day of month for the monthly reminder.'],
-  ['Price Update Reminder Time', '12:00', 'Last day of the month: reminder to update investment prices.'],
+  [SETTING.PRICE_REMINDER_TIME, '12:00', 'Last day of the month: reminder to update investment prices.'],
   ['Closing Reminder Time', '18:00', 'Last day of the month: reminder to close the month.'],
   [SETTING.DEBT_DAYS_BEFORE_DUE, '3', 'Start reminding this many days before a due date.'],
   ['Main Sheet ID', '', 'Info only (written by the script). The real value is in Script Properties.'],
@@ -133,6 +141,9 @@ const ADJUST_DELETE_SECONDS = 60;
 
 /** The /open reply is deleted this many seconds after it's sent (when Open auto-delete = Yes). */
 const OPEN_DELETE_SECONDS = 60;
+
+/** The /inv reply is deleted this many seconds after it's sent (when Inv auto-delete = Yes). */
+const INV_DELETE_SECONDS = 60;
 
 /** Settings rows from earlier versions that are no longer used; upgradeSettings() removes them. */
 // 'Debt Reminder After Days': short-term records without a due date are only in the weekly list (owner, Phase 5).
@@ -200,7 +211,7 @@ function loadSettingsTab_(fresh) {
     return i === -1 ? '' : String(row[i]).trim();
   };
 
-  const result = { settings: {}, users: [], owners: [], walletGroups: [] };
+  const result = { settings: {}, users: [], owners: [], walletGroups: [], invCategories: [] };
   values.slice(1).forEach(function (row) {
     const key = cell(row, 'setting');
     if (key !== '') result.settings[key.toLowerCase()] = cell(row, 'value');
@@ -215,6 +226,7 @@ function loadSettingsTab_(fresh) {
     }
     if (cell(row, 'owners') !== '') result.owners.push(cell(row, 'owners'));
     if (cell(row, 'wallet groups') !== '') result.walletGroups.push(cell(row, 'wallet groups'));
+    if (cell(row, 'investment categories') !== '') result.invCategories.push(cell(row, 'investment categories'));
   });
 
   const cached = JSON.parse(JSON.stringify(result));

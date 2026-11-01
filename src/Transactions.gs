@@ -6,7 +6,8 @@
  *   Income → In, Expense → Out, Transfer → Transfer (Wallet → To Wallet).
  */
 
-const DIRECTION_BY_TYPE = { Income: 'In', Expense: 'Out', Transfer: 'Transfer', Piutang: 'Out', Hutang: 'In' };
+const DIRECTION_BY_TYPE = { Income: 'In', Expense: 'Out', Transfer: 'Transfer', Piutang: 'Out', Hutang: 'In',
+  'Investment Buy': 'Transfer', 'Investment Sell': 'Transfer' };
 // Settlement / Addition get their direction from the debt (piutang or hutang); conversions use 'None'.
 const CATEGORY_SOURCE_BY_HOW = { tag: 'Manual', chosen: 'Manual', keyword: 'Keyword', ai: 'AI' };
 
@@ -15,10 +16,10 @@ const CATEGORY_SOURCE_BY_HOW = { tag: 'Manual', chosen: 'Manual', keyword: 'Keyw
  * linked group, e.g. transfer + fee). Must be called inside withScriptLock_
  * (the caller also re-checks the pending entry there). Returns the Trx ID.
  */
-function writeTransaction_(ss, d, loggedBy, linkId) {
+function writeTransaction_(ss, d, loggedBy, linkId, at) {
   const sheet = ss.getSheetByName(TAB.TRANSACTIONS);
-  const id = nextId_(sheet, 'Trx ID', 'TRX');
-  appendRowByHeaders_(ss, TAB.TRANSACTIONS, {
+  const id = at ? at.id : nextId_(sheet, 'Trx ID', 'TRX');
+  const values = {
     'Trx ID': id,
     'Link ID': linkId || '',
     'Date': new Date(d.date),
@@ -29,13 +30,28 @@ function writeTransaction_(ss, d, loggedBy, linkId) {
     'Category': d.category || '',
     'Category Source': d.category ? (CATEGORY_SOURCE_BY_HOW[d.categoryHow] || 'Manual') : '',
     'Wallet': d.wallet,
-    'To Wallet': d.type === 'Transfer' ? d.toWallet : '',
+    'To Wallet': d.type === 'Transfer' || d.direction === 'Transfer' ? d.toWallet : '',
     'Note': d.note,
     'Debt ID': d.debtId || '',
     'Favorite ID': d.favId || '',
     'Input Source': d.inputSource || 'Text'
-  });
+  };
+  // at = { id, row } worked out before any write of the same save (see prepareColumnById_).
+  if (at) writeRowsByHeaders_(sheet, at.row, [values]);
+  else appendRowByHeaders_(ss, TAB.TRANSACTIONS, values);
   return id;
+}
+
+/** 'TRX-0012' + 2 → 'TRX-0014' (same number of digits). */
+function bumpId_(id, n) {
+  const m = String(id).match(/^(.*-)(\d+)$/);
+  return n && m ? m[1] + String(Number(m[2]) + n).padStart(m[2].length, '0') : id;
+}
+
+/** The next Trx ID and the row it goes to, read before a save writes anything. */
+function nextTransactionSlot_(ss) {
+  const sheet = ss.getSheetByName(TAB.TRANSACTIONS);
+  return { id: nextId_(sheet, 'Trx ID', 'TRX'), row: lastDataRow_(sheet) + 1 };
 }
 
 /**
@@ -115,7 +131,7 @@ function deleteTransactions_(ss, trxIds) {
 function describeRow_(r) {
   const type = String(r['type']);
   const parts = [escapeHtml_(r['trx id']), type, formatRp_(r['amount'])];
-  if (type === 'Transfer') parts.push(escapeHtml_(r['wallet']) + ' → ' + escapeHtml_(r['to wallet']));
+  if (type === 'Transfer' || /^Investment /.test(type)) parts.push(escapeHtml_(r['wallet']) + ' → ' + escapeHtml_(r['to wallet']));
   else parts.push(escapeHtml_(r['category']), escapeHtml_(r['wallet']));
   if (r['date'] instanceof Date) parts.push(formatDate_(r['date']));
   const note = String(r['note'] || '').trim();

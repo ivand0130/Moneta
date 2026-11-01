@@ -186,6 +186,10 @@ function handleText_(message) {
       case '/budget':
         startBudget_(chatId, args);
         return;
+      case '/inv':
+      case '/investasi':
+        handleInvCommand_(message, args);
+        return;
       case '/fav':
       case '/favorite':
       case '/favorites':
@@ -224,6 +228,10 @@ function handleText_(message) {
     handlePendingText_(p, message);
     return;
   }
+  if (p && p.kind === 'inv' && p.awaitText) {
+    handleInvText_(p, message);
+    return;
+  }
   if (p && p.kind === 'debt' && p.awaitText) {
     handleDebtText_(p, message);
     return;
@@ -257,6 +265,12 @@ function buildHelpText_() {
     '• <code>split 400rb makan Budi Andi termasuk saya</code> (add aku / saya to include yourself)',
     '• <code>Budi bayar 200rb</code> (nearest due date first) · <code>bayar hutang Andi 500rb</code> · <code>Budi lunas</code>',
     '• <code>tambah piutang Budi 100rb</code> · <code>tutup piutang PTG-001</code> (turn it into an expense)',
+    '',
+    '📈 <b>Investments</b>',
+    '• <code>beli emas 2gr 1.350rb/gr dari BCA</code> · <code>beli emas 2gr 2.7jt</code> (a value on its own = the total) · <code>beli emas 2.7jt harga 1.350rb/gr</code>',
+    '• <code>beli BBCA 2 lot 9.800/lembar dari IPOT fee 3rb</code> (saved as 200 lembar) · <code>beli BTC 0,01 coin 15jt/coin</code> · <code>beli RDPU X 150,5 unit @1.520 via Bibit</code>',
+    '• <code>jual BBCA 1 lot harga 10.200 ke BCA</code> (oldest purchase first) · <code>jual semua emas 1.4jt/gr</code> · /inv sell · the unit comes from the Wallet Type (Emas = gr, Saham = lembar, Others = as typed)',
+    '• <code>/inv update BBCA 9.800</code>, or <code>/inv update</code> + one asset per line · /inv · <code>/inv emas</code>',
     '',
     '⭐ <b>Favorites</b> (usual transactions)',
     '• <code>/fav</code> → tap one to log it · <code>/fav listrik</code> logs it by name',

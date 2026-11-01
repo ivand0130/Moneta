@@ -11,8 +11,16 @@ function loadWallets_(ss) {
   return readTableByHeaders_(ss.getSheetByName(TAB.WALLETS), 'Wallet').map(function (r) {
     return {
       name: String(r['wallet']).trim(),
-      group: String(r['wallet group'] || '').trim(),
-      type: /^investment$/i.test(String(r['wallet type']).trim()) ? 'Investment' : 'Cash',
+      // Several groups are allowed, comma-separated ("Spending, Investment Wallet"); the first one is the
+      // wallet's home group (where /saldo lists it), groups holds all of them.
+      group: splitGroups_(r['wallet group'])[0] || '',
+      groups: splitGroups_(r['wallet group']),
+      type: walletKind_(r['wallet type']) ? 'Investment' : 'Cash',
+      kind: walletKind_(r['wallet type']), // Emas / Saham / Others ('' for cash)
+      // The category every investment in this wallet gets (Settings → Investment Categories); empty → the wallet's name.
+      invCategory: walletKind_(r['wallet type']) ? (String(r['investment category'] || '').trim() || String(r['wallet']).trim()) : '',
+      // Several categories are allowed, comma-separated ("Saham, Crypto"): a buy into this wallet then asks which.
+      invCategories: walletKind_(r['wallet type']) ? splitGroups_(String(r['investment category'] || '').trim() || String(r['wallet']).trim()) : [],
       balance: Number(r['current balance']) || 0,
       owner: String(r['owner'] || '').trim(),
       active: String(r['active'] || '').trim().toLowerCase() !== 'no',
@@ -20,6 +28,32 @@ function loadWallets_(ss) {
       row: r._row
     };
   });
+}
+
+/** "Spending, Investment Wallet" → ['Spending', 'Investment Wallet']. */
+function splitGroups_(value) {
+  return String(value || '').split(',').map(function (g) { return g.trim(); }).filter(String);
+}
+
+/** The investment categories of an investment wallet (["Saham", "Crypto"]); its name when none is set. */
+function walletCategories_(w) {
+  if (!w) return [];
+  if (w.invCategories && w.invCategories.length) return w.invCategories;
+  return splitGroups_(w.invCategory || w.name);
+}
+
+/** All groups of a wallet (works for wallets built without .groups, e.g. in tests). */
+function walletGroups_(w) {
+  return w.groups || splitGroups_(w.group);
+}
+
+/** Wallet Type → investment kind: 'Emas' / 'Saham' / 'Others' (also the old "Investment"), or '' for cash. */
+function walletKind_(type) {
+  const t = String(type || '').trim().toLowerCase();
+  if (/^(emas|gold)$/.test(t)) return 'Emas';
+  if (/^(saham|stock|stocks)$/.test(t)) return 'Saham';
+  if (/^(others?|lainnya|investment|investasi)$/.test(t)) return 'Others';
+  return '';
 }
 
 /** Finds a wallet by name (case-insensitive), or null. */
@@ -39,7 +73,10 @@ function cashWallets_(wallets) {
  * investmentGroups is a lowercase list.
  */
 function isInvestmentWallet_(w, investmentGroups) {
-  return w.type === 'Investment' || (investmentGroups || []).indexOf(String(w.group || '').toLowerCase()) !== -1;
+  if (w.type === 'Investment') return true;
+  // Any of its groups being an investment group (e.g. IPOT in "Investment") keeps it out of expenses/income.
+  // The "Investment Wallet" group (allowed to pay for investments) is not one, so "Spending, Investment Wallet" still spends.
+  return walletGroups_(w).some(function (g) { return (investmentGroups || []).indexOf(g.toLowerCase()) !== -1; });
 }
 
 /** Wallets usable for expenses and income: active cash wallets that aren't investment wallets. */
@@ -50,7 +87,7 @@ function everydayWallets_(wallets, investmentGroups) {
 /** Wallets offered as buttons for an expense: everyday wallets in the "Spending Wallet Groups". */
 function spendingWallets_(wallets, investmentGroups, spendingGroups) {
   return everydayWallets_(wallets, investmentGroups).filter(function (w) {
-    return spendingGroups.indexOf(w.group.toLowerCase()) !== -1;
+    return walletGroups_(w).some(function (g) { return spendingGroups.indexOf(g.toLowerCase()) !== -1; });
   });
 }
 
@@ -75,13 +112,13 @@ function buildSaldoText_(wallets, filter, investmentGroups) {
     if (byName.length === 0) {
       byName = list.filter(function (w) { return w.name.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase() === f; });
     }
-    const byGroup = by('group');
+    const byGroup = list.filter(function (w) { return walletGroups_(w).some(function (g) { return g.toLowerCase() === f; }); });
     list = byName.length ? byName : (byGroup.length ? byGroup : by('owner'));
     if (list.length === 0) {
       const active = wallets.filter(function (w) { return w.active; });
       const names = function (field) { return escapeHtml_(unique_(active.map(function (w) { return w[field]; })).join(', ')); };
       return { error: 'No wallet, group or owner called "' + escapeHtml_(filter) + '".\nWallets: ' + names('name') +
-        '\nGroups: ' + names('group') + '\nOwners: ' + names('owner') + '\nOr use <code>/saldo all</code>.' };
+        '\nGroups: ' + escapeHtml_(unique_([].concat.apply([], active.map(walletGroups_))).join(', ')) + '\nOwners: ' + names('owner') + '\nOr use <code>/saldo all</code>.' };
     }
   }
 
@@ -119,7 +156,8 @@ function buildWalletListText_(wallets) {
   unique_(wallets.map(function (w) { return w.group; }), true).forEach(function (group) {
     lines.push('', '<b>' + escapeHtml_(group || 'No group') + '</b>');
     wallets.filter(function (w) { return w.group === group; }).forEach(function (w) {
-      lines.push('• ' + escapeHtml_(w.name) + ' — ' + w.type + (w.owner ? ', ' + escapeHtml_(w.owner) : '') +
+      lines.push('• ' + escapeHtml_(w.name) + ' — ' + (w.kind || w.type) + (w.owner ? ', ' + escapeHtml_(w.owner) : '') +
+        (walletGroups_(w).length > 1 ? ' <i>(also ' + escapeHtml_(walletGroups_(w).slice(1).join(', ')) + ')</i>' : '') +
         (w.active ? '' : ' <i>(inactive)</i>'));
     });
   });
@@ -134,14 +172,16 @@ function buildWalletListText_(wallets) {
 function addWallet_(ss, w) {
   withScriptLock_(function () {
     if (findWallet_(loadWallets_(ss), w.name)) throw new Error('Wallet "' + w.name + '" already exists.');
-    appendRowByHeaders_(ss, TAB.WALLETS, {
-      'Wallet': w.name, 'Wallet Group': w.group, 'Wallet Type': w.type,
-      'Opening Balance': 0, 'Owner': w.owner, 'Active': 'Yes'
+    const row = { 'Wallet': w.name, 'Wallet Group': w.group, 'Wallet Type': w.type, 'Opening Balance': 0, 'Owner': w.owner, 'Active': 'Yes' };
+    if (walletKind_(w.type) && w.invCategory) row['Investment Category'] = w.invCategory;
+    appendRowByHeaders_(ss, TAB.WALLETS, favKnownColumns_(ss.getSheetByName(TAB.WALLETS), row).values);
+    // The category also gets an Investment row in Categories (Transactions use it for reporting).
+    const have = loadCategories_(ss);
+    (walletKind_(w.type) ? splitGroups_(w.invCategory || w.name) : []).forEach(function (cat) {
+      if (!have.some(function (c) { return c.name.toLowerCase() === cat.toLowerCase(); })) {
+        appendRowByHeaders_(ss, TAB.CATEGORIES, { 'Category': cat, 'Type': 'Investment' });
+      }
     });
-    if (w.type === 'Investment' &&
-        !loadCategories_(ss).some(function (c) { return c.name.toLowerCase() === w.name.toLowerCase(); })) {
-      appendRowByHeaders_(ss, TAB.CATEGORIES, { 'Category': w.name, 'Type': 'Investment' });
-    }
   });
 }
 

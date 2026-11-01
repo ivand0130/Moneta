@@ -881,3 +881,166 @@ function testReminders() {
   t('nothing → no message', buildMorningMessage_([], null, now), null);
   console.log((pass === 21 ? 'PASS' : 'FAIL') + ': testReminders ' + pass + '/21');
 }
+
+/** Investment test data: wallets typed Saham / Emas / Others, and purchase rows (stocks in lots, prices per lembar). */
+function invTestCtx_() {
+  const ctx = testCtx_();
+  ctx.wallets = ctx.wallets.map(function (w) { return w.name === 'Saham' ? Object.assign({}, w, { kind: 'Saham' }) : w; })
+    .concat([{ name: 'Emas', group: 'Investment', type: 'Investment', kind: 'Emas', active: true },
+      { name: 'Reksadana', group: 'Investment', type: 'Investment', kind: 'Others', active: true }]);
+  const row = function (id, asset, cat, unit, qty, price, extra) {
+    const m = unit === 'lot' ? 100 : 1;
+    return Object.assign({ id: id, link: '', date: new Date(2026, 0, Number(id.slice(-2))), category: cat, invWallet: cat, asset: asset, platform: '',
+      unit: unit, qty: qty, price: price, cost: qty * m * price, current: null, lastUpdate: null, source: 'BCA', status: 'Holding',
+      holding: qty > 0, row: Number(id.slice(-2)) + 1 }, extra || {});
+  };
+  ctx.investments = [
+    row('INV-0001', 'BBCA', 'Saham', 'lot', 3, 9500, { source: 'IPOT (Saham)', cost: 4 * 100 * 9500, status: 'Partially Sold' }),
+    row('INV-0002', 'BBCA', 'Saham', 'lot', 2, 9800, { current: 9900 }),
+    row('INV-0003', 'Antam', 'Emas', 'gram', 2, 1350000),
+    row('INV-0004', 'RDPU X', 'Reksadana', 'unit', 1000.5, 1520.35),
+    row('INV-0005', 'TLKM', 'Saham', 'lot', 0, 3000, { status: 'Sold', holding: false, cost: 5 * 100 * 3000 })
+  ];
+  ctx.sales = [
+    { saleId: 'SAL-0001', invId: 'INV-0001', date: new Date(2026, 8, 20), qty: 1, price: 10000, fee: 0 },
+    { saleId: 'SAL-0002', invId: 'INV-0005', date: new Date(2026, 7, 1), qty: 5, price: 3200, fee: 5000 }
+  ];
+  return ctx;
+}
+
+/** Investment numbers, buy/sell parsing and /inv update parsing (no sheet needed). */
+function testInvParser() {
+  const ctx = invTestCtx_();
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  // Numbers, formats and spacing
+  t('numbers', ['1.350rb', '1,5jt', '9.800', '1.520,35', '150,5', '0.005', '1.000', '50,000', 'rp2.700rb', '0,5'].map(parseInvNumber_),
+    [1350000, 1500000, 9800, 1520.35, 150.5, 0.005, 1000, 50000, 2700000, 0.5]);
+  t('format', [formatNumId_(1520.35, 2), formatQty_(150.5, 'unit'), formatQty_(2, 'lot'), formatInvPrice_(9800, 'lot'),
+    formatInvPrice_(1350000, 'gram')], ['1.520,35', '150,5 unit', '2 lot', 'Rp9.800/lembar', 'Rp1.350.000/gr']);
+  t('spacing', [normalizeInvText_('Emas 3 jt/ gr'), normalizeInvText_('beli emas 2 gr Rp 1,4 jt / gr')],
+    ['Emas 3jt/gr', 'beli emas 2 gr Rp1,4jt/gr']);
+  t('unit from the wallet type', [unitFor_(ctx.wallets, 'Emas', '', ''), unitFor_(ctx.wallets, 'Saham', '', 'share'),
+    unitFor_(ctx.wallets, 'Reksadana', '', ''), unitFor_(ctx.wallets, 'Reksadana', '', 'coin'), unitFor_(ctx.wallets, '', '', 'share')],
+    ['gram', 'lot', 'unit', 'coin', 'lot']);
+
+  // Buy: parse, then work out the numbers (as advanceBuy_ does)
+  const buy = function (text) {
+    const r = parseInvestment_(text, ctx);
+    if (!r || !r.ok) return r;
+    const d = Object.assign({}, r, { in: { qty: r.qty, qtyUnit: r.qtyUnit, price: r.price, priceSuffix: r.priceSuffix, total: r.total,
+      bare: r.bare, plain: r.plain } });
+    d.unit = d.unit || 'unit';
+    resolveInvNumbers_(d);
+    return { kind: d.kind, asset: d.asset, category: d.category, unit: d.unit, qty: d.qty, price: d.priceStored, total: d.total,
+      fee: d.fee, wallet: d.wallet, platform: d.platform };
+  };
+  const cases = [
+    ['beli emas 2gr 1.350rb/gr', { asset: 'Emas', category: 'Emas', unit: 'gram', qty: 2, price: 1350000, total: 2700000 }],
+    ['beli emas 2gr total 2.700rb', { qty: 2, price: 1350000, total: 2700000 }],
+    ['beli emas 2.700rb harga 1.350rb/gr', { qty: 2, price: 1350000, total: 2700000 }],
+    ['beli emas 2gr 2.7jt', { qty: 2, price: 1350000, total: 2700000 }],                 // a value on its own = total
+    ['beli emas 2 gr 1,4 jt/ gr', { qty: 2, price: 1400000, total: 2800000 }],           // spaces around the unit
+    ['beli Antam 0,5gr 1.4jt/gr dari BCA', { asset: 'Antam', category: 'Emas', unit: 'gram', qty: 0.5, total: 700000, wallet: 'BCA' }],
+    ['beli BBCA 2 lot 9.800/lembar', { asset: 'BBCA', unit: 'lot', qty: 2, price: 9800, total: 1960000 }],
+    ['beli BBCA 2 lot 1.960rb', { unit: 'lot', qty: 2, price: 9800, total: 1960000 }],
+    ['beli BBCA 200 lembar harga 9.800 fee 3rb dari IPOT', { qty: 2, price: 9800, total: 1960000, fee: 3000, wallet: 'IPOT (Saham)' }],
+    ['beli BBCA 200 lbr @9.800', { qty: 2, price: 9800, total: 1960000 }],               // lbr = lembar
+    ['beli BBCA 1 lot 9.800/lbr', { qty: 1, price: 9800, total: 980000 }],
+    ['beli BBCA 1 lot 980rb/lot', { qty: 1, price: 9800, total: 980000 }],
+    ['beli RDPU X 150,5 unit @1.520 via Bibit', { asset: 'RDPU X', unit: 'unit', qty: 150.5, price: 1520, total: 228760, platform: 'Bibit' }],
+    ['beli RDPU X 1jt harga 1.520,35', { qty: 657.7432828, total: 1000000 }],
+    ['beli GOTO 10 lot @70 dari BCA', { asset: 'GOTO', category: '', unit: 'lot', qty: 10, price: 70, total: 70000 }],
+    ['beli emas kemarin 1gr 1.4jt/gr', { qty: 1, total: 1400000 }]
+  ];
+  cases.forEach(function (c) { if (checkCase_('buy: ' + c[0], buy(c[0]) || {}, c[1])) pass++; });
+  t('"beli kopi 20rb" is not an investment', parseInvestment_('beli kopi 20rb', ctx), null);
+  t('"50rb makan" is not an investment', parseInvestment_('50rb makan', ctx), null);
+  t('beli BBCA without numbers asks later', buy('beli BBCA').qty, null);
+  t('"beli kopi 250gr 50rb" stays an expense', parseInvestment_('beli kopi 250gr 50rb', ctx), null);
+  t('a new coin with a price per coin is an investment', [buy('beli BTC 0,01 coin 15jt/coin').qty, buy('beli BTC 0,01 coin 15jt/coin').asset],
+    [0.01, 'BTC']);
+
+  // Investment wallets with a category from Settings: two stock wallets share "Saham"
+  const ctx2 = invTestCtx_();
+  ctx2.wallets = ctx2.wallets.filter(function (w) { return w.name !== 'Saham'; }).concat([{ name: 'IPOT Saham', group: 'Investment', type: 'Investment', kind: 'Saham', invCategory: 'Saham', active: true },
+    { name: 'Ajaib', group: 'Investment', type: 'Investment', kind: 'Saham', invCategory: 'Saham', active: true }]);
+  const byWallet = parseInvestment_('beli BBRI 1 lot 4.000/lbr ajaib', ctx2);
+  t('wallet named → category from the wallet', [byWallet.invWallet, byWallet.category, byWallet.unit], ['Ajaib', 'Saham', 'lot']);
+  const byCat = parseInvestment_('beli saham BBRI 1 lot 4.000/lbr', ctx2);
+  t('category named → asks which of its wallets', [byCat.invWallet, byCat.category, byCat.invWalletChoices], ['', 'Saham', ['IPOT Saham', 'Ajaib']]);
+  ctx2.wallets.push({ name: 'Bibit', group: 'Investment', type: 'Investment', kind: 'Others', invCategory: 'Reksadana, Crypto',
+    invCategories: ['Reksadana', 'Crypto'], active: true });
+  t('a wallet with several categories → the category is asked', parseInvestment_('beli RDPU Y 100 unit @1.000 bibit', ctx2).category, '');
+  t('…unless the message names it', parseInvestment_('beli crypto BTC 0,01 coin 15jt/coin bibit', ctx2).category, 'Crypto');
+  t('a known asset keeps its wallet and category', [parseInvestment_('beli BBCA 1 lot 9.800/lbr', ctx2).invWallet, parseInvestment_('beli BBCA 1 lot 9.800/lbr', ctx2).category], ['Saham', 'Saham']);
+
+  // Sell
+  const sell = function (text) {
+    const r = parseInvestment_(text, ctx);
+    return r && r.ok ? { kind: r.kind, asset: r.asset, unit: r.unit, qty: r.qty, qtyUnit: r.qtyUnit, price: r.price, bare: r.bare, all: r.all,
+      wallet: r.wallet } : r;
+  };
+  t('sell parse', sell('jual BBCA 5 lot harga 10.200 ke BCA'), { kind: 'sell', asset: 'BBCA', unit: 'lot', qty: 5, qtyUnit: 'lot',
+    price: 10200, bare: [], all: false, wallet: 'BCA' });
+  t('sell in lbr with a total', [sell('jual BBCA 100 lbr 1jt ke BCA').qtyUnit, sell('jual BBCA 100 lbr 1jt ke BCA').bare], ['share', [1000000]]);
+  t('sell all of a category with one asset', sell('jual semua emas 1.4jt/gr ke BCA').asset, 'Antam');
+  t('sell unknown asset', sell('jual XYZ 1 lot 100').error, 'inv_unknown_asset');
+
+  // FIFO (lots; prices per lembar)
+  const bbca = ctx.investments.filter(function (x) { return x.asset === 'BBCA'; });
+  const fifo = allocateSale_(bbca, 4, null);
+  t('FIFO takes the oldest first', fifo.parts.map(function (p) { return p.inv.id + ':' + p.qty; }), ['INV-0001:3', 'INV-0002:1']);
+  t('picked row', allocateSale_(bbca, 1, 'INV-0002').parts.map(function (p) { return p.inv.id + ':' + p.qty; }), ['INV-0002:1']);
+  t('too much', allocateSale_(bbca, 6, null).error, 'inv_too_much');
+  t('picked row too small', allocateSale_(bbca, 3, 'INV-0002').held, 2);
+  t('realized gain (lot × 100 × price)', saleGain_(fifo.parts, 10200, 5000), 3 * 100 * 700 + 1 * 100 * 400 - 5000);
+
+  // /inv update
+  const up = parseInvUpdate_('BBCA 10.200\nEmas 3 jt/ gr\nRDPU X 1.530,5\nXYZ 100\nnonsense', ctx.investments);
+  t('update items', up.items.map(function (it) { return it.name + ' ' + it.price + ' x' + it.rows.length; }),
+    ['BBCA 10200 x2', 'Emas 3000000 x1', 'RDPU X 1530.5 x1']);
+  t('update unknown / unreadable', [up.unknown, up.bad], [['XYZ'], ['nonsense']]);
+  t('sold assets are not updated', parseInvUpdate_('TLKM 3.100', ctx.investments).unknown, ['TLKM']);
+  t('price "/lot" ÷100, "/lbr" as is', [parseInvUpdate_('BBCA 1.020rb/lot', ctx.investments).items[0].price,
+    parseInvUpdate_('BBCA 10.200/lbr', ctx.investments).items[0].price], [10200, 10200]);
+  const total = 27 + cases.length;
+  console.log((pass === total ? 'PASS' : 'FAIL') + ': testInvParser ' + pass + '/' + total);
+}
+
+/** /inv text (held items only), the Investments-tab numbers, the price reminder and wallet groups (no sheet needed). */
+function testInvReport() {
+  const ctx = invTestCtx_();
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  const sum = invSummary_(ctx.investments, ctx.sales);
+  t('categories', sum.map(function (c) { return c.name; }), ['Emas', 'Reksadana', 'Saham']);
+  const bbca = sum[2].assets.filter(function (a) { return a.name === 'BBCA'; })[0];
+  t('BBCA held lots / value (lot × 100 × price)', [bbca.qty, Math.round(bbca.value)], [5, 3 * 100 * 9500 + 2 * 100 * 9900]);
+  t('BBCA sold / realized', [bbca.soldQty, bbca.realized], [1, 1 * 100 * 500]);
+  const tlkm = sum[2].assets.filter(function (a) { return a.name === 'TLKM'; })[0];
+  t('fully sold asset keeps its realized gain (Investments tab)', [tlkm.qty, tlkm.realized], [0, 5 * 100 * 200 - 5000]);
+  const text = buildInvText_(ctx.investments, '', false).text;
+  t('/inv: held items, avg buy → now per lembar', [text.indexOf('<b>BBCA</b> · 5 lot') !== -1,
+    text.indexOf('avg Rp9.620 → now Rp9.660/lembar') !== -1, text.indexOf('<b>Antam</b> · 2 gr') !== -1], [true, true, true]);
+  t('/inv: no sold / realized lines, sold-out items hidden', [text.indexOf('sold') === -1, text.indexOf('TLKM') === -1,
+    text.indexOf('realized') === -1], [true, true, true]);
+  t('filter by asset', buildInvText_(ctx.investments, 'antam', false).text.indexOf('<b>Antam</b> · 2 gr') !== -1, true);
+  t('unknown filter', buildInvText_(ctx.investments, 'xyz', false).error, 'inv_filter');
+  t('hidden amounts', buildInvText_(ctx.investments, '', true).text.indexOf('<tg-spoiler>') !== -1, true);
+  const rem = buildPriceReminderText_(ctx.investments);
+  t('reminder lists held assets with typeable prices', [rem.indexOf('BBCA 9.900') !== -1, rem.indexOf('BBCA 9.900/') === -1,
+    rem.indexOf('Antam 1.350.000/gr') !== -1, rem.indexOf('TLKM') === -1], [true, true, true, true]);
+  t('nothing held → no reminder', buildPriceReminderText_([]), null);
+  t('last day of month', [isLastDayOfMonth_(new Date(2026, 10, 30)), isLastDayOfMonth_(new Date(2026, 10, 29)), isLastDayOfMonth_(new Date(2027, 1, 28))],
+    [true, false, true]);
+  t('wallet types', ['Emas', 'saham', 'Others', 'Investment', 'Cash', ''].map(walletKind_), ['Emas', 'Saham', 'Others', 'Others', '', '']);
+  // Several groups per wallet
+  const bca = { name: 'BCA', type: 'Cash', active: true, group: 'Spending', groups: splitGroups_('Spending, Investment Wallet') };
+  const ipot = { name: 'IPOT', type: 'Cash', active: true, group: 'Investment', groups: splitGroups_('Investment, Investment Wallet') };
+  t('groups split', bca.groups, ['Spending', 'Investment Wallet']);
+  t('"Spending, Investment Wallet" still spends; IPOT stays an investment wallet',
+    [isInvestmentWallet_(bca, ['investment']), isInvestmentWallet_(ipot, ['investment']),
+      spendingWallets_([bca, ipot], ['investment'], ['spending']).map(function (w) { return w.name; })], [false, true, ['BCA']]);
+  console.log((pass === 15 ? 'PASS' : 'FAIL') + ': testInvReport ' + pass + '/15');
+}

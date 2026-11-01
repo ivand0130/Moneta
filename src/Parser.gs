@@ -751,14 +751,20 @@ function parseDebt_(text, ctx) {
   const has = function (list) { return head.some(function (t) { return isIn(t, list); }); };
   const idTok = tokens.filter(function (t) { return DEBT_ID_RE.test(t.clean); })[0] || null;
   const typeTok = tokens.filter(function (t) { return isIn(t, DEBT_TYPE_WORDS); })[0] || null;
-  const probe = tokens.map(function (t) { return { raw: t.raw, clean: t.clean, used: false }; });
-  const contactProbe = extractContacts_(probe, ctx.contacts || []);
+  // Contacts are only looked at when a pay word is present (they may be read lazily from the sheet).
+  let probed = null;
+  const contactProbe = function () {
+    if (probed === null) {
+      probed = extractContacts_(tokens.map(function (t) { return { raw: t.raw, clean: t.clean, used: false }; }), ctx.contacts || []);
+    }
+    return probed;
+  };
 
   let kind = null;
   if (isIn(tokens[0], SPLIT_WORDS)) kind = 'split';
   else if (isIn(tokens[0], CONVERT_WORDS) && (typeTok || idTok)) kind = 'convert';
   else if (isIn(tokens[0], ADD_WORDS) && (typeTok || idTok)) kind = 'add';
-  else if ((has(PAY_WORDS) || has(FULL_WORDS)) && (typeTok || idTok || contactProbe.length)) kind = 'pay';
+  else if ((has(PAY_WORDS) || has(FULL_WORDS)) && (typeTok || idTok || contactProbe().length)) kind = 'pay';
   else if (has(LEND_WORDS) || has(BORROW_WORDS)) kind = 'new';
   if (kind === null) return null;
 
@@ -773,9 +779,9 @@ function parseDebt_(text, ctx) {
     // "Budi pinjam 500rb" = Budi borrows from me → piutang; "pinjam 1jt dari Andi" → hutang.
     debtType = lend !== -1 ? 'Piutang' : (borrow > 0 && !isIn(tokens[0], ME_WORDS) ? 'Piutang' : 'Hutang');
   }
-  if (kind === 'pay' && debtType === null && contactProbe.length && firstVerb !== -1) {
+  if (kind === 'pay' && debtType === null && contactProbe().length && firstVerb !== -1) {
     // "Budi bayar 200rb" (they pay me) vs "bayar Andi 500rb" (I pay them)
-    debtType = contactProbe[0].index < firstVerb ? 'Piutang' : 'Hutang';
+    debtType = contactProbe()[0].index < firstVerb ? 'Piutang' : 'Hutang';
   }
   if (kind === 'split') debtType = 'Piutang';
 

@@ -3,13 +3,12 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 5 — BUILT, first test feedback fixed and pushed (2026-11-01), waiting
-for the owner's re-test. Owner setup: new deployment version, upgradeSheets
-(adds the Favorites Keywords column, removes "Debt Reminder After Days"),
-add the partner's Chat ID to Settings → Users.
+Phase 6 — BUILT and pushed (2026-11-01), waiting for the owner's Telegram
+checklist. Owner setup: new deployment version, upgradeSheets (adds
+Investment_Sales → Link ID).
+Phase 5 — DONE (committed 78d4907; owner re-test of the fixes pending).
 Phase 4, 3, 2B, 2, 1, 0 — DONE.
-Next: Phase 6 — Investments (adds the last-day 12:00 price reminder as a
-new slot in reminderSlots_ in Reminders.gs).
+Next: Phase 7 — Bill OCR (GoPay Split Bill + receipts).
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)
@@ -320,12 +319,185 @@ Still to change in code that is already built:
       counted as two people. uniqueChatIds_ now sends/lists per chat once
       (favorites and debts); /fav flags two favorites with the same name
 
+- Phase 6 (investments)
+  - Owner decisions: stocks stored in LOTS (Quantity in lots, prices per lot;
+    a typed price for a lot asset is per share ×100 unless "/lot"); a buy
+    fee goes into the cost (Acquisition Cost = qty × price + fee,
+    Acquisition Price = cost / qty); no source wallet → last one used for
+    that asset (else category), shown "(last used)"; the price reminder
+    goes to every active user (each chat once)
+  - Defaults: sale fee in Investment_Sales → Fees (reduces Realized Gain),
+    wallet gets proceeds − fee; "nominal" assets: Quantity = Rupiah, price
+    1, and /inv update takes the new TOTAL value; /inv has no password
+    (spoiler amounts), no auto-delete; quantities "0,5" / "0.005" are
+    decimals, "1.000" = thousand
+  - Investments.gs: parseInvestment_ (pure) — only when the message starts
+    with beli/buy/invest/jual/sell/cairkan/redeem AND names an investment
+    wallet, a known asset or "lot" ("beli kopi 20rb" stays an expense).
+    Checked after favorites, before debts. readInvNumbers_ reads "2gr",
+    "2 lot", "1.350rb/gr", "@1.520", "harga X", "total X", "fee X",
+    "semua"; resolveInvNumbers_ works out the missing one of qty / price /
+    total from what was typed (d.in), every time. Unmarked money with a
+    quantity: lot → price per share, else the bot asks [price] / [total].
+    Unit: typed → the asset's rows → the category's latest row → buttons.
+    Platform: "via/di X", else the source wallet's name before "("
+  - Buy: Investments row (Current Price = purchase price, Status Holding,
+    Source Wallet, Link ID) + Transactions "Investment Buy" (Direction
+    Transfer, source → category wallet, Category = Investment category of the
+    same name) + the price applied to every holding row of that asset and
+    logged in Price_History
+  - Sell: FIFO (allocateSale_) or [🔀 Choose rows] (one row); preview shows
+    rows, fee, proceeds into the wallet, realized gain (saleGain_).
+    Investment_Sales row per purchase row (fee on the first), Quantity =
+    remaining, Status Partially Sold / Sold, "Investment Sell" transfer of
+    proceeds − fee, price applied + logged. /inv sell = guided (asset buttons
+    → quantity → price, [Last price] button)
+  - /inv update: one asset per line; asset name → its holding rows, category
+    name → its holding rows (same unit); unknown → [Skip those, save the rest]
+    / [Correct it]; >30% change flagged. Source Manual (one line) / Bulk
+  - Sheet edits: syncSheetPrices_ (on /inv, buy/sell messages, the price
+    reminder) gives typed rows an Inv ID / Status / Acquisition Cost and logs
+    a changed Current Price as "Sheet Edit" + Last Price Update
+  - /inv [category | asset]: per category and asset: quantity, last price
+    (date), average cost, value, gain Rp/% (money_ spoilers), total, realized
+    gain this month (Investment_Sales)
+  - /undo: a buy also deletes its Investments row (blocked once sold from);
+    a sale gives the quantities back and deletes its Investment_Sales rows
+    (needs the new Link ID column)
+  - Reminders: slot "price" (Price Update Reminder Time, last day of the
+    month) with a copy-ready <pre>/inv update</pre> block. Still 2 triggers
+  - Owner's first test (2026-11-01): "beli BBCA 1 lot 9.500" was an expense
+    because the web app still ran version 20 (Phase 5); the Phase 6 code was
+    pushed but no new deployment version made. Speed work (same behaviour,
+    checked with a sheet-read counter in the fake run; saves 31-36 → 9-18
+    reads, button taps 6 → 3):
+    - getHeaderInfo_/getHeaderMap_ cache each tab's header row per execution
+      (headerCacheOff_ = true in createTemplate/resetSheets/upgradeSheets/
+      upgradeSettings/validateSheet, which change headers)
+    - lastDataRow_ reads only the last 50 rows (whole tab only if empty)
+    - loadCtx_: contacts read lazily (getter); parseDebt_ looks at contacts
+      only when a pay word is present; startTransaction_ passes
+      Object.create(ctx) so the getter stays lazy
+    - favorites name/keyword lookup skipped when the message has a digit
+    - syncSheetPrices_ reads once, locks only to write, returns the rows; it
+      runs when a flow starts (/inv, /inv update, /inv sell, buy/sell message,
+      price reminder), not on button taps (invCtx_(sync))
+    - saves read everything first, then write (prepareColumnById_,
+      preparePrices_, preparePriceHistory_, nextTransactionSlot_ + bumpId_,
+      prepareFavoriteLogged_): a read after a write makes Sheets recalculate
+  - Owner feedback 2 (2026-11-01), replaces the lot decision above:
+    - Wallet Type = Cash / Emas / Saham / Others (old "Investment" = Others;
+      walletKind_ in Wallets.gs, w.kind). The type sets the unit (unitFor_):
+      Emas → gram, Saham → share shown as "lembar" ("2 lot" = 200 lembar,
+      "/lot" price ÷100), Others → typed unit (unit / coin / nominal…)
+    - A value on its own is the TOTAL; with a unit ("10jt/gr", "5000/lembar",
+      "harga", "@") it is the price — in messages and in replies, buy and
+      sell. The "price or total?" question is gone
+    - normalizeInvText_: "Emas 3 jt/ gr" → "Emas 3jt/gr", "Rp 10jt" → "Rp10jt"
+    - Investment signal also: lembar / coin words or a price per investment
+      unit ("15jt/coin"); "beli kopi 250gr 50rb" stays an expense
+    - Tabs: the old "Investments" (one row per purchase) is now
+      "Investment_Details" (TAB.INVESTMENTS) with formula columns Qty Sold,
+      Sold Value, Avg Sell Price, Realized Gain, Total Gain/Loss (Rp/%). New
+      "Investments" (TAB.INV_SUMMARY): one row per asset, all formulas — Qty
+      Bought / Sold / Held, Avg Buy Price (Total Cost ÷ Qty Bought), Total
+      Cost, Avg Sell Price, Sold Value, Current Price / Value, Floating Gain,
+      Realized Gain, Total Gain/Loss (Rp/%). Total = floating (held at the
+      current price) + realized
+    - /inv: per asset held qty, avg buy, last price, floating; if sold: sold
+      qty @ avg sell, realized, total (sold + held); sold-out assets stay with
+      their realized gain. "Inv auto-delete" (default Yes, 60s)
+    - upgradeSheets: renameInvestmentDetails_ → upgradeMissingColumns_
+      (now also formula columns, en_US) for Investment_Sales and
+      Investment_Details → convertLotRows_ (lot → lembar in details, sales,
+      price history) → upgradeMissingTabs_ (summary before the details tab)
+      → upgradeWalletTypes_ (dropdown, Investment → Emas/Saham/Others by name,
+      Current Balance and Dashboard wallet-group formulas)
+  - Owner feedback 3 (2026-11-01), final for stocks and wallets:
+    - "lbr" = lembar everywhere (buy, sell, /inv update)
+    - Stocks: Quantity in LOTS, prices per LEMBAR (IDX style). lotMult_()
+      (JS) and lotMultOf_ / saleLotMult_ (sheet formulas) multiply by 100
+      for Unit "lot": value, cost, proceeds, realized gain, average prices
+      per lembar in both investment tabs. "200 lbr" = 2 lot, "980rb/lot" =
+      Rp9.800/lembar. Saham wallets → unit lot
+    - convertStockRows_ (replaces convertLotRows_, runs in upgradeSheets):
+      share/lembar rows → lot (qty ÷100, sales too); lot rows whose prices
+      were per lot (Acquisition Cost ≈ qty × price) → prices ÷100 (sales,
+      Price_History too). Safe to run again
+    - refreshFormulas_(ss, tab) rewrites changed header formulas (used for
+      Investment_Details, Investment_Sales, Investments)
+    - Wallet Group may hold several groups, comma-separated ("Spending,
+      Investment Wallet"). w.group = first (home: /saldo, /wallet, previews,
+      Dashboard group balances), w.groups / walletGroups_ = all. Spending
+      buttons: any group in Spending Wallet Groups. Blocked for expenses: any
+      group in Investment Wallet Groups (so IPOT "Investment, Investment
+      Wallet" stays blocked). /saldo <group> matches any group. The Wallet
+      Group dropdown flags a two-group cell as invalid (allowed, warning only)
+    - New setting "Investment Source Groups" (default "Investment Wallet"):
+      buy source and sale destination buttons list only those wallets
+      (invSourceWallets_); a typed or last-used wallet outside them is asked
+      again. upgradeSheets adds "Investment Wallet" to Settings → Wallet Groups
+    - /inv simplified: held items only — quantity, avg buy → now (per lembar /
+      gr / unit), change Rp/%, value; category and total lines. Sold and
+      realized numbers stay in the Investments tab
+    - /wallet add: tick one or more groups (✅), then Done → saved as "A, B". The
+      Wallet Group dropdown in the sheet needs "Allow multiple selections" switched
+      on by hand (Apps Script cannot set it); it saves the same "A, B" format
+  - Owner feedback 4: investment CATEGORY ≠ investment WALLET
+    - Settings → Investment Categories is a typed list (was a formula from
+      Categories); settingsInvCategoriesToList_ keeps the old values
+    - Wallets → new column Investment Category (dropdown from that list) for
+      investment wallets (w.invCategory; empty → the wallet's name). /wallet add
+      asks it for Emas / Saham / Others wallets. Several wallets may share one
+    - Investment_Details → new column Investment Wallet (holds the row; the
+      Wallets Current Balance formula now sums by it). Investment Category =
+      the wallet's category (reports, /inv, the Investments tab)
+    - Buy: "which investment wallet holds it?" (buttons "Wallet · Category");
+      a wallet name picks it, a category name picks its only wallet or asks
+      among its wallets, a known asset keeps its wallet. Sell uses the rows'
+      wallet. Transactions: To Wallet / Wallet = the investment wallet,
+      Category = the investment category
+    - If only one wallet is in the Investment Wallet group, buys and sales use
+      it without asking ("your only investment wallet")
+    - fillInvestmentWallets_ (upgradeSheets): investment wallets without a
+      category get their own name (added to the Settings list); old detail
+      rows get Investment Wallet = their old Investment Category. Dashboard
+      AE3 lists the Settings categories
+  - Owner feedback 5:
+    - Buy preview: [👛 From] (paying wallet) [📈 To] (investment wallet) and
+      [🏷 Category] when the wallet has several. Sell preview: [📈 From] (when
+      the asset is in several investment wallets) [👛 To] (where the money goes)
+    - An investment wallet may have several categories (Wallets → Investment
+      Category "Reksadana, Crypto"; w.invCategories / walletCategories_).
+      Buying into it asks the category unless the asset or the message names
+      it; /wallet add ticks one or more. Multi-select in the sheet dropdown is
+      switched on by hand, like Wallet Group
+    - Selling an asset held in several wallets without naming one asks which;
+      the sale (save re-check, Choose rows, Last price) only uses that wallet's
+      rows — bug found in the fake run: the save re-check took FIFO across
+      all wallets
+    - Owner: each investment wallet keeps its own average for the same stock;
+      selling is FIFO inside the chosen wallet. /inv shows the combined line plus
+      one line per wallet (◦ wallet · qty · avg) when a stock is in several; the
+      "Sell from which?" buttons show each wallet's average. The Investments tab
+      keeps one combined average per stock
+    - Tests: testInvParser 38, testInvReport 15
+    - Tests: testInvParser 36, testInvReport 14; formulas checked for brackets
+      and column references (Sheets itself can't run in the Node test)
+  - Tests: testInvParser 29, testInvReport 10; Node fake end-to-end run of
+    buy / ask / sell FIFO + chosen row / bulk update / sheet edit / undo /
+    guided sell / last-day reminder
+
 ## Known issues
 - (Resolved in Phase 4) Conversions are Expense/Income rows with Direction
   None, so every total that counts Type = Expense / Income includes them
 - Price columns use Rp#,##0, so fractional unit prices (e.g. reksadana NAV)
   display rounded (the stored value is exact)
 - Closed-month protection is not built yet (Closing phase)
+- After /undo of the newest rows, the next entry reuses the same IDs
+  (TRX/LNK/SAL: nextId_ = highest + 1). Harmless (the old rows are gone)
+- Investments: one source wallet per purchase; a buy paid from two wallets
+  needs a transfer first. Lots are assumed to be 100 shares
 - Partner's chat ID may still need to be typed into Settings → Users
 - The Users table and Settings are cached for 5 minutes (except the
   password, the /saldo switch and the budget-message settings, which are

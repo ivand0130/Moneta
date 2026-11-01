@@ -18,19 +18,38 @@ function openMainSheet_() {
   return mainSheetCache_;
 }
 
+// Speed: each tab's header row is read once per execution (one message) and remembered here.
+// The editor setup/upgrade functions add columns, so they switch this off (headerCacheOff_ = true).
+let headerCache_ = {};
+let headerCacheOff_ = false;
+
+/** Header row of a tab: { lastCol, headers (trimmed, lowercase), formulas }. Cached per execution. */
+function getHeaderInfo_(sheet) {
+  const key = headerCacheOff_ ? null : sheet.getName();
+  if (key !== null && headerCache_[key]) return headerCache_[key];
+  const lastCol = sheet.getLastColumn();
+  const info = { lastCol: lastCol, headers: [], formulas: [] };
+  if (lastCol > 0) {
+    const range = sheet.getRange(1, 1, 1, lastCol);
+    info.headers = range.getValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
+    info.formulas = range.getFormulas()[0];
+  }
+  if (key !== null) headerCache_[key] = info;
+  return info;
+}
+
 /**
  * Maps header names (trimmed, lowercase) to 0-based column indexes,
  * using row 1 of the given tab. Blank headers are skipped.
  */
 function getHeaderMap_(sheet) {
-  const lastCol = sheet.getLastColumn();
+  const info = getHeaderInfo_(sheet);
+  if (info.map) return info.map;
   const map = {};
-  if (lastCol === 0) return map;
-  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  headers.forEach(function (h, i) {
-    const name = String(h).trim().toLowerCase();
+  info.headers.forEach(function (name, i) {
     if (name !== '' && map[name] === undefined) map[name] = i;
   });
+  if (!headerCacheOff_) info.map = map;
   return map;
 }
 
@@ -69,7 +88,7 @@ function readTableByHeaders_(sheet, keyHeader) {
  */
 function lastDataRow_(sheet, keyHeader) {
   const lastRow = sheet.getLastRow();
-  const lastCol = sheet.getLastColumn();
+  const lastCol = getHeaderInfo_(sheet).lastCol;
   if (lastRow < 2 || lastCol === 0) return 1;
   let cols;
   if (keyHeader) {
@@ -77,16 +96,24 @@ function lastDataRow_(sheet, keyHeader) {
     if (col === undefined) throw new Error('Column "' + keyHeader + '" not found in tab ' + sheet.getName());
     cols = [col];
   } else {
-    const formulas = sheet.getRange(1, 1, 1, lastCol).getFormulas()[0];
+    const formulas = getHeaderInfo_(sheet).formulas;
     cols = formulas.map(function (f, i) { return f === '' ? i : -1; }).filter(function (i) { return i !== -1; });
   }
-  const values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
-  for (let i = values.length - 1; i >= 1; i--) {
-    for (let k = 0; k < cols.length; k++) {
-      if (String(values[i][cols[k]]).trim() !== '') return i + 1;
+  // Speed: read only the last rows (the last value is almost always near getLastRow); the whole
+  // tab only if they are all empty.
+  const scan = function (from) {
+    const values = sheet.getRange(from, 1, lastRow - from + 1, lastCol).getValues();
+    for (let i = values.length - 1; i >= 0; i--) {
+      if (from + i < 2) break;
+      for (let k = 0; k < cols.length; k++) {
+        if (String(values[i][cols[k]]).trim() !== '') return from + i;
+      }
     }
-  }
-  return 1;
+    return 1;
+  };
+  const tailStart = Math.max(1, lastRow - 49);
+  const found = scan(tailStart);
+  return found > 1 || tailStart === 1 ? found : scan(1);
 }
 
 /**
@@ -117,10 +144,10 @@ function nextId_(sheet, header, prefix, digits) {
  */
 function writeRowsByHeaders_(sheet, startRow, objects) {
   if (objects.length === 0) return;
-  const lastCol = sheet.getLastColumn();
-  const headerRange = sheet.getRange(1, 1, 1, lastCol);
-  const headers = headerRange.getValues()[0].map(function (h) { return String(h).trim().toLowerCase(); });
-  const formulas = headerRange.getFormulas()[0];
+  const info = getHeaderInfo_(sheet);
+  const lastCol = info.lastCol;
+  const headers = info.headers;
+  const formulas = info.formulas;
 
   const rows = objects.map(function (obj) {
     const row = {};
@@ -169,13 +196,24 @@ function writeRowsByHeaders_(sheet, startRow, objects) {
  * Call inside withScriptLock_.
  */
 function setColumnById_(sheet, idHeader, targetHeader, byId) {
+  const step = prepareColumnById_(sheet, idHeader, targetHeader, byId);
+  step.commit();
+  return step.count;
+}
+
+/**
+ * setColumnById_ in two steps: reads now, writes on commit(). A save reads
+ * everything first and writes afterwards, because a read after a write makes
+ * the sheet recalculate its formulas first (slow).
+ */
+function prepareColumnById_(sheet, idHeader, targetHeader, byId) {
   const map = getHeaderMap_(sheet);
   const idCol = map[idHeader.toLowerCase()];
   const col = map[targetHeader.toLowerCase()];
   if (idCol === undefined || col === undefined) throw new Error('Column "' + (idCol === undefined ? idHeader : targetHeader) +
     '" not found in tab ' + sheet.getName());
   const n = sheet.getLastRow() - 1;
-  if (n < 1) return 0;
+  if (n < 1 || Object.keys(byId).length === 0) return { count: 0, commit: function () {} };
   const ids = sheet.getRange(2, idCol + 1, n, 1).getValues();
   const range = sheet.getRange(2, col + 1, n, 1);
   const values = range.getValues();
@@ -184,8 +222,7 @@ function setColumnById_(sheet, idHeader, targetHeader, byId) {
     const id = String(r[0]).trim();
     if (id !== '' && Object.prototype.hasOwnProperty.call(byId, id)) { values[i][0] = byId[id]; count++; }
   });
-  if (count) range.setValues(values);
-  return count;
+  return { count: count, commit: function () { if (count) range.setValues(values); } };
 }
 
 /**

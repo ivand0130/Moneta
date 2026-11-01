@@ -568,10 +568,25 @@ function favRowValues_(d) {
 
 /** Called after a favorite was logged (inside the save lock). */
 function markFavoriteLogged_(ss, favId, date) {
+  prepareFavoriteLogged_(ss, favId, date).commit();
+}
+
+/** Last Logged in two steps: finds the row now, writes on commit(). Never throws. */
+function prepareFavoriteLogged_(ss, favId, date) {
   try {
-    writeFavorite_(ss, favId, { 'Last Logged': midnight_(date) });
+    const sheet = ss.getSheetByName(TAB.FAVORITES);
+    const fav = loadFavorites_(ss).filter(function (f) { return f.id === favId; })[0];
+    if (!fav) return { commit: function () {} };
+    return { commit: function () {
+      try {
+        writeRowsByHeaders_(sheet, fav.row, [{ 'Last Logged': midnight_(date) }]);
+      } catch (err) {
+        logError_('markFavoriteLogged_', err, favId);
+      }
+    } };
   } catch (err) {
     logError_('markFavoriteLogged_', err, favId);
+    return { commit: function () {} };
   }
 }
 

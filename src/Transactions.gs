@@ -32,7 +32,8 @@ function writeTransaction_(ss, d, loggedBy, linkId) {
     'To Wallet': d.type === 'Transfer' ? d.toWallet : '',
     'Note': d.note,
     'Debt ID': d.debtId || '',
-    'Input Source': 'Text'
+    'Favorite ID': d.favId || '',
+    'Input Source': d.inputSource || 'Text'
   });
   return id;
 }

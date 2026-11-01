@@ -163,6 +163,32 @@ function writeRowsByHeaders_(sheet, startRow, objects) {
 }
 
 /**
+ * Sets one column for the rows whose idHeader value is a key of `byId`
+ * ({ 'PTG-001': value }): reads the ID and target columns once and writes
+ * the target column back in one call. Returns how many rows were set.
+ * Call inside withScriptLock_.
+ */
+function setColumnById_(sheet, idHeader, targetHeader, byId) {
+  const map = getHeaderMap_(sheet);
+  const idCol = map[idHeader.toLowerCase()];
+  const col = map[targetHeader.toLowerCase()];
+  if (idCol === undefined || col === undefined) throw new Error('Column "' + (idCol === undefined ? idHeader : targetHeader) +
+    '" not found in tab ' + sheet.getName());
+  const n = sheet.getLastRow() - 1;
+  if (n < 1) return 0;
+  const ids = sheet.getRange(2, idCol + 1, n, 1).getValues();
+  const range = sheet.getRange(2, col + 1, n, 1);
+  const values = range.getValues();
+  let count = 0;
+  ids.forEach(function (r, i) {
+    const id = String(r[0]).trim();
+    if (id !== '' && Object.prototype.hasOwnProperty.call(byId, id)) { values[i][0] = byId[id]; count++; }
+  });
+  if (count) range.setValues(values);
+  return count;
+}
+
+/**
  * Appends one row to a tab below the last row that has a value in keyHeader
  * (default: first column). Returns false if the tab doesn't exist.
  */

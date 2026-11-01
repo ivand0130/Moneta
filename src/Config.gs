@@ -18,7 +18,9 @@ const PROP = {
   ARCHIVE_FOLDER_ID: 'ARCHIVE_FOLDER_ID',
   TEMPLATE_ID: 'TEMPLATE_ID',           // Clean template sheet (set by createTemplate)
   RECENT_UPDATES: 'RECENT_UPDATES',     // Written by the bot; see showRecentUpdates()
-  DELETE_QUEUE: 'DELETE_QUEUE'          // Backup of the auto-delete queue
+  DELETE_QUEUE: 'DELETE_QUEUE',         // Backup of the auto-delete queue
+  REMINDER_STATE: 'REMINDER_STATE',     // Last day each reminder slot ran (runReminders)
+  FAV_PROMPTS: 'FAV_PROMPTS'            // Latest favorite prompt message per favorite + chat
 };
 
 /** Tab names in the main sheet. */
@@ -81,7 +83,11 @@ const SETTING = {
   OPEN_PASSWORD: 'Password for /open',
   OPEN_AUTO_DELETE: 'Open auto-delete',
   SPENDING_GROUPS: 'Spending Wallet Groups',
-  INVESTMENT_GROUPS: 'Investment Wallet Groups'
+  INVESTMENT_GROUPS: 'Investment Wallet Groups',
+  DAILY_REMINDER_TIME: 'Daily Reminder Time',
+  WEEKLY_REMINDER_DAY: 'Weekly Reminder Day',
+  MONTHLY_REMINDER_DATE: 'Monthly Reminder Date',
+  DEBT_DAYS_BEFORE_DUE: 'Debt Reminder Days Before Due'
 };
 
 /**
@@ -106,12 +112,12 @@ const SETTING_ROWS = [
   [SETTING.OPEN_AUTO_DELETE, 'Yes', 'Yes = the /open reply is deleted after 60s. No = it stays.'],
   [SETTING.SPENDING_GROUPS, 'Spending', 'Wallet groups offered as buttons for expenses (comma-separated).'],
   [SETTING.INVESTMENT_GROUPS, 'Investment', 'Wallet groups that hold investment money: not usable for expenses/income, hidden in /saldo (shown in /saldo all). Transfers are fine.'],
-  ['Daily Reminder Time', '08:00', 'Hour for the daily hutang/piutang reminder (HH:MM).'],
-  ['Weekly Reminder Day', 'Monday', 'Day for the weekly summary reminder.'],
-  ['Monthly Reminder Date', '1', 'Day of month for the monthly reminder.'],
+  [SETTING.DAILY_REMINDER_TIME, '08:00', 'Hour of the morning reminders: hutang/piutang and scheduled favorites (HH:MM, whole hours).'],
+  [SETTING.WEEKLY_REMINDER_DAY, 'Monday', 'Day for the weekly summary reminder.'],
+  [SETTING.MONTHLY_REMINDER_DATE, '1', 'Day of month for the monthly reminder.'],
   ['Price Update Reminder Time', '12:00', 'Last day of the month: reminder to update investment prices.'],
   ['Closing Reminder Time', '18:00', 'Last day of the month: reminder to close the month.'],
-  ['Debt Reminder Days Before Due', '3', 'Start reminding this many days before a due date.'],
+  [SETTING.DEBT_DAYS_BEFORE_DUE, '3', 'Start reminding this many days before a due date.'],
   ['Main Sheet ID', '', 'Info only (written by the script). The real value is in Script Properties.'],
   ['Archive Folder ID', '', 'Info only. Set with /setarchive (later phase).']
 ];
@@ -129,7 +135,8 @@ const ADJUST_DELETE_SECONDS = 60;
 const OPEN_DELETE_SECONDS = 60;
 
 /** Settings rows from earlier versions that are no longer used; upgradeSettings() removes them. */
-const OBSOLETE_SETTINGS = ['Saldo auto-delete (seconds)', 'Budget auto-delete (seconds)'];
+// 'Debt Reminder After Days': short-term records without a due date are only in the weekly list (owner, Phase 5).
+const OBSOLETE_SETTINGS = ['Saldo auto-delete (seconds)', 'Budget auto-delete (seconds)', 'Debt Reminder After Days'];
 
 /** How many recent webhook outcomes to keep for showRecentUpdates(). */
 const RECENT_UPDATES_MAX = 10;

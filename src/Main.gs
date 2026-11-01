@@ -186,6 +186,11 @@ function handleText_(message) {
       case '/budget':
         startBudget_(chatId, args);
         return;
+      case '/fav':
+      case '/favorite':
+      case '/favorites':
+        handleFavCommand_(chatId, args);
+        return;
       case '/changepass':
         startChangePassword_(chatId);
         return;
@@ -252,6 +257,15 @@ function buildHelpText_() {
     '• <code>split 400rb makan Budi Andi termasuk saya</code> (add aku / saya to include yourself)',
     '• <code>Budi bayar 200rb</code> (nearest due date first) · <code>bayar hutang Andi 500rb</code> · <code>Budi lunas</code>',
     '• <code>tambah piutang Budi 100rb</code> · <code>tutup piutang PTG-001</code> (turn it into an expense)',
+    '',
+    '⭐ <b>Favorites</b> (usual transactions)',
+    '• <code>/fav</code> → tap one to log it · <code>/fav listrik</code> logs it by name',
+    '• <code>/fav add Bayar Token Listrik 100k setiap tanggal 1 BCA</code> → reminder on the 1st of every month',
+    '• <code>/fav add Top up GoPay 100k dari BCA admin 1rb setiap senin</code> · <code>/fav add Belanja bulanan</code> (amount asked each time)',
+    '• <code>/fav edit listrik jadi 150rb</code> · <code>… jadi Token PLN</code> (rename) · <code>… jadi setiap tanggal 2</code> · <code>… jadi tanpa jadwal</code>',
+    '• <code>/fav edit cicilan mobil jadi keyword bayar mobil, cicilan mobil</code> → typing <code>bayar mobil</code> logs it',
+    '• <code>/fav off listrik</code> pauses it · <code>/fav on listrik</code> · <code>/fav delete listrik</code>',
+    '• At 08:00 one message lists what is due. A single favorite comes with ✅ Yes / ✏️ Change amount / ⏭ Skip',
     '',
     'Amounts: 50000 · 50.000 · 50k · 50rb · 1.5jt · 2juta',
     'Wallet: write its name anywhere (BCA, GoPay…). No wallet? I use the category\'s default or ask.',

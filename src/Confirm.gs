@@ -108,6 +108,16 @@ function loadCtx_() {
 function startTransaction_(message) {
   const chatId = String(message.chat.id);
   const ctx = loadCtx_();
+  // Exactly a favorite's name or keyword ("bayar mobil") → log that favorite (before debts: "bayar …").
+  const named = function () {
+    return loadFavorites_(ctx.ss).filter(function (f) { return f.active && favMatchesText_(f, message.text); })[0];
+  };
+  let fav = named();
+  if (fav && !fav.id) { // typed in the sheet without an ID yet
+    withScriptLock_(function () { ensureFavoriteIds_(ctx.ss); });
+    fav = named();
+  }
+  if (fav) return startFavLog_(chatId, fav, ctx, null, false);
   // Hutang / piutang / split bill messages go to Debts.gs first.
   const debt = parseDebt_(message.text, { wallets: ctx.wallets, categories: ctx.categories, contacts: ctx.contacts,
     investmentGroups: ctx.investmentGroups, now: new Date() });
@@ -210,6 +220,15 @@ function advanceTrx_(p, ctx) {
       d.wallet = def.name;
       d.walletHow = 'default';
     }
+    // An expense favorite's default fee: a second expense from the same wallet (on top of the amount).
+    if (d.extra) {
+      if (d.type !== 'Expense' || d.extra.kind !== 'fee') {
+        d.extra = null;
+      } else if (!ctx.categories.some(function (c) { return c.name === d.extra.category && c.type === 'Expense'; })) {
+        d.extra.category = null;
+        return askCategory_(p, ctx, 'extra');
+      }
+    }
   }
 
   if (isMonthClosed_(ctx.ss, d.date)) {
@@ -253,12 +272,24 @@ function entriesOf_(d) {
     category: d.type === 'Transfer' ? '' : d.category, categoryHow: d.type === 'Transfer' ? '' : d.categoryHow,
     note: d.note, date: d.date };
   const x = d.extra;
-  if (d.type !== 'Transfer' || !x || x.kind === 'received') return [main];
-  const fromSource = x.kind === 'fee' || x.from === 'source';
-  if (fromSource) main.amount = d.amount - x.amount; // fee or source-spent part comes out of the amount
-  const note = x.note || (x.kind === 'fee' ? 'Transfer fee ' : 'Spent during transfer ') + d.wallet + ' → ' + d.toWallet;
-  return [main, { type: 'Expense', amount: x.amount, wallet: fromSource ? d.wallet : d.toWallet, toWallet: '',
-    category: x.category, categoryHow: x.categoryHow, note: note, date: d.date }];
+  let out;
+  if (d.type !== 'Transfer') {
+    // Expense + fee (an expense favorite's default fee): the fee is paid on top, from the same wallet.
+    out = x && x.kind === 'fee' && d.type === 'Expense'
+      ? [main, { type: 'Expense', amount: x.amount, wallet: d.wallet, toWallet: '', category: x.category,
+        categoryHow: x.categoryHow, note: x.note || 'Fee: ' + d.note, date: d.date }]
+      : [main];
+  } else if (!x || x.kind === 'received') {
+    out = [main];
+  } else {
+    const fromSource = x.kind === 'fee' || x.from === 'source';
+    if (fromSource) main.amount = d.amount - x.amount; // fee or source-spent part comes out of the amount
+    const note = x.note || (x.kind === 'fee' ? 'Transfer fee ' : 'Spent during transfer ') + d.wallet + ' → ' + d.toWallet;
+    out = [main, { type: 'Expense', amount: x.amount, wallet: fromSource ? d.wallet : d.toWallet, toWallet: '',
+      category: x.category, categoryHow: x.categoryHow, note: note, date: d.date }];
+  }
+  if (d.favId) out.forEach(function (e) { e.favId = d.favId; e.inputSource = 'Favorite'; });
+  return out;
 }
 
 /** How much each wallet changes: { walletName: +/- amount }. */
@@ -328,7 +359,7 @@ function askWallet_(p, ctx, which, warning) {
     list = typed.map(function (n) { return findWallet_(ctx.wallets, n); }).filter(Boolean);
   } else if (which !== 'wallet') {
     list = cashWallets_(ctx.wallets);
-  } else if (p.d.type === 'Expense') {
+  } else if (p.d.type === 'Expense' && !p.d.anyWallet) { // favorites may use any everyday wallet (e.g. savings)
     list = spendingWallets_(ctx.wallets, ctx.investmentGroups, ctx.spendingGroups);
     if (list.length === 0) list = everydayWallets_(ctx.wallets, ctx.investmentGroups); // no match: don't strand the user
   } else {
@@ -366,7 +397,7 @@ function summaryLine_(p) {
     (d.note ? ' · ' + escapeHtml_(d.note) : '');
 }
 
-const CATEGORY_HOW_LABEL = { tag: 'your #tag', keyword: 'keyword', ai: 'AI', chosen: 'you picked' };
+const CATEGORY_HOW_LABEL = { tag: 'your #tag', keyword: 'keyword', ai: 'AI', chosen: 'you picked', favorite: 'favorite' };
 
 function buildPreviewText_(p, ctx, footer) {
   const d = p.d;
@@ -385,7 +416,7 @@ function buildPreviewText_(p, ctx, footer) {
         '1. Transfer <b>' + formatRp_(entries[0].amount) + '</b> · ' + route,
         '2. Expense <b>' + formatRp_(x.amount) + '</b> · ' + escapeHtml_(x.category) + how(x.categoryHow) +
           ' · from ' + escapeHtml_(entries[1].wallet) +
-          (x.suggested ? ' <i>(default fee for ' + escapeHtml_(d.wallet) + ')</i>' : '') +
+          (x.suggested ? ' <i>(' + (x.fromFav ? "favorite's fee" : 'default fee for ' + escapeHtml_(d.wallet)) + ')</i>' : '') +
           (x.kind === 'partial' && x.note ? ' · "' + escapeHtml_(x.note) + '"' : ''));
     }
     const deltas = walletDeltas_(entries);
@@ -398,6 +429,10 @@ function buildPreviewText_(p, ctx, footer) {
       '📂 ' + escapeHtml_(d.category) + how(d.categoryHow),
       '👛 ' + escapeHtml_(w.name) + ' → ' + escapeHtml_(w.group) +
         (d.walletHow === 'default' ? ' <i>(default for ' + escapeHtml_(d.category) + ')</i>' : ''));
+    if (entries.length > 1) {
+      lines.push('💸 + fee <b>' + formatRp_(entries[1].amount) + '</b> · ' + escapeHtml_(entries[1].category) +
+        how(entries[1].categoryHow) + (d.extra.fromFav ? " <i>(favorite's fee)</i>" : ''));
+    }
   }
   lines.push('📅 ' + formatDate_(d.date));
   if (d.note) lines.push('📝 ' + escapeHtml_(d.note));
@@ -450,6 +485,10 @@ function showEditMenu_(p, ctx) {
   } else {
     rows = [[btn_(p, 'Amount', 'ef', 'amount'), btn_(p, 'Category', 'ef', 'category'), btn_(p, 'Wallet', 'ef', 'wallet')],
       [btn_(p, 'Date', 'ef', 'date'), btn_(p, 'Note', 'ef', 'note'), btn_(p, 'Type', 'ef', 'type')]];
+    if (d.extra) {
+      rows.push([btn_(p, 'Fee amount', 'ef', 'xamount'), btn_(p, 'Fee category', 'ef', 'xcategory'),
+        btn_(p, '🚫 Remove fee', 'xr')]);
+    }
   }
   rows.push([btn_(p, '⬅️ Back', 'back'), btn_(p, '❌ Cancel entry', 'n')]);
   showStep_(p, buildPreviewText_(p, ctx, '✏️ What do you want to change?'), rows);
@@ -621,13 +660,15 @@ function saveTrx_(p, ctx, user) {
     const sheet = ctx.ss.getSheetByName(TAB.TRANSACTIONS);
     const linkId = entries.length > 1 ? nextId_(sheet, 'Link ID', 'LNK') : '';
     const ids = entries.map(function (e) { return writeTransaction_(ctx.ss, e, loggedBy, linkId); });
+    if (d.favId) markFavoriteLogged_(ctx.ss, d.favId, d.date);
     clearPending_(p.chatId);
     return { ids: ids, linkId: linkId };
   });
   if (saved === null) return;
 
-  editMessage(p.chatId, p.msgId, '✅ Saved as <b>' + saved.ids.join('</b> + <b>') + '</b>' +
-    (saved.linkId ? ' (' + saved.linkId + ')' : '') + '.');
+  editMessage(p.chatId, p.msgId, '✅ ' + (d.favId ? '<b>' + escapeHtml_(d.note) + '</b> saved' : 'Saved') + ' as <b>' +
+    saved.ids.join('</b> + <b>') + '</b>' + (saved.linkId ? ' (' + saved.linkId + ')' : '') + '.');
+  if (d.favId) closeFavPrompts_(d.favId, p.chatId, p.msgId);
   afterSave_(ctx.ss, p.chatId, entries);
   const x = d.extra;
   if (x && x.kind === 'partial' && x.categoryHow === 'chosen' && x.note) offerKeyword_(p.chatId, x.category, x.note);
@@ -869,6 +910,9 @@ function categoryAddCallback_(p, action, arg) {
 function handleCallback_(cq) {
   const chatId = String(cq.message.chat.id);
   const parts = String(cq.data || '').split('|');
+  // Reminder buttons work for days, so they aren't tied to the 10-minute pending item.
+  if (parts[0] === 'F') return favPromptCallback_(cq, parts);
+  if (parts[0] === 'S') return snoozeCallback_(cq, parts);
   const p = getPending_(chatId);
   if (!p || p.pid !== parts[0]) {
     answerCallbackQuery(cq.id, 'This has expired. Please send it again.');
@@ -887,6 +931,7 @@ function handleCallback_(cq) {
   else if (p.kind === 'adj') adjustCallback_(p, action, arg, getUserByChatId_(chatId));
   else if (p.kind === 'debt') debtCallback_(p, action, arg, getUserByChatId_(chatId));
   else if (p.kind === 'contact') contactCallback_(p, action);
+  else if (p.kind === 'fav') favCallback_(p, action, arg, getUserByChatId_(chatId));
 }
 
 /** Friendly reply for a message the parser couldn't use. */

@@ -692,3 +692,192 @@ function testShares() {
   t('mismatch', JSON.parse(s([{ name: 'A', amount: 100000 }], 300000, { amount: 100000 })).error, 'shares_mismatch');
   console.log((pass === 5 ? 'PASS' : 'FAIL') + ': testShares ' + pass + '/5');
 }
+
+/** /fav add and /fav edit parsing (no sheet needed). */
+function testFavParser() {
+  const ctx = testCtx_();
+  ctx.userNames = ['Me', 'Partner'];
+  const a = function (r) {
+    if (!r.ok) return r;
+    return Object.assign({}, r, { start: r.start ? testValue_(r.start) : null });
+  };
+  const cases = [
+    ['Bayar Token Listrik 100k setiap tanggal 1 September 2026', { ok: true, name: 'Bayar Token Listrik', type: 'Expense',
+      amount: 100000, valueType: 'Fixed', category: 'Bills & Utilities', schedule: 'Monthly', day: 1, start: '2026-9-1' }],
+    ['Bayar cicilan mobil 100k', { ok: true, name: 'Bayar cicilan mobil', amount: 100000, schedule: '', start: null }],
+    ['Belanja bulanan 200k', { ok: true, name: 'Belanja bulanan', amount: 200000, schedule: '' }],
+    ['Belanja bulanan', { ok: true, name: 'Belanja bulanan', amount: null, valueType: 'Variable' }],
+    ['Listrik BCA tiap bulan tgl 5', { ok: true, name: 'Listrik', wallet: 'BCA', valueType: 'Variable', schedule: 'Monthly', day: 5,
+      category: 'Bills & Utilities' }],
+    ['Kos 2jt tgl 31 setiap bulan', { ok: true, name: 'Kos', amount: 2000000, schedule: 'Monthly', day: 31 }],
+    ['Kos 2jt tanggal 5', { ok: true, schedule: 'Monthly', day: 5 }],
+    ['Token listrik 350rb variable setiap tanggal 20', { ok: true, valueType: 'Variable', amount: 350000, day: 20 }],
+    ['Top up GoPay 100k dari BCA admin 1rb setiap senin', { ok: true, type: 'Transfer', name: 'Top up GoPay', wallet: 'BCA', toWallet: 'GoPay',
+      fee: 1000, schedule: 'Weekly', day: 'Monday' }],
+    ['Tabungan 1jt BCA ke Jago tiap tanggal 26', { ok: true, type: 'Transfer', name: 'Tabungan', wallet: 'BCA', toWallet: 'Jago', day: 26 }],
+    ['Infaq 50rb every friday', { ok: true, schedule: 'Weekly', day: 'Friday', name: 'Infaq' }],
+    ['Arisan 100rb tiap minggu hari sabtu', { ok: true, schedule: 'Weekly', day: 'Saturday', name: 'Arisan' }],
+    ['Bayar cicilan mobil 2jt BCA keyword bayar mobil, cicilan mobil', { ok: true, name: 'Bayar cicilan mobil', amount: 2000000,
+      keywords: ['bayar mobil', 'cicilan mobil'] }],
+    ['Tabungan rumah 500rb Jago tiap tanggal 1', { ok: true, wallet: 'Jago', name: 'Tabungan rumah' }],
+    ['Gaji 10jt BCA setiap tanggal 25', { ok: true, type: 'Income', category: 'Salary', schedule: 'Monthly', day: 25 }],
+    ['Internet 300rb monthly on the 10th remind Partner', { ok: true, name: 'Internet', day: 10, remind: 'Partner' }],
+    ['Internet 300rb remind Budi', { ok: false, error: 'fav_remind_unknown' }],
+    ['Listrik 100k setiap tanggal 32', { ok: false, error: 'fav_bad_day' }],
+    ['Listrik 100k kemarin', { ok: false, error: 'fav_date' }],
+    ['100k setiap tanggal 1', { ok: false, error: 'fav_no_name' }],
+    ['', { ok: false, error: 'fav_usage' }]
+  ];
+  let pass = 0;
+  cases.forEach(function (c) { if (checkCase_('fav add: ' + c[0], a(parseFavAdd_(c[0], ctx)), c[1])) pass++; });
+
+  const fav = { id: 'FAV-001', name: 'Bayar Token Listrik', type: 'Expense' };
+  const tfav = { id: 'FAV-002', name: 'Top up GoPay', type: 'Transfer' };
+  const e = function (text, f) {
+    const r = parseFavEdit_(text, f || fav, ctx);
+    if (!r.ok) return r;
+    const ch = Object.assign({}, r.changes);
+    if (ch.start) ch.start = testValue_(ch.start);
+    return Object.assign({ ok: true }, ch);
+  };
+  const edits = [
+    ['2jt', { ok: true, amount: 2000000 }],
+    ['setiap tanggal 2 September', { ok: true, schedule: 'Monthly', day: 2, start: '2026-9-2' }],
+    ['tanpa jadwal', { ok: true, schedule: '', day: '' }],
+    ['GoPay #health admin 2.5rb', { ok: true, wallet: 'GoPay', category: 'Health', fee: 2500 }],
+    ['variable', { ok: true, valueType: 'Variable' }],
+    ['tanpa admin', { ok: true, fee: 0 }],
+    ['remind all', { ok: true, remind: 'All' }],
+    ['nama Token PLN', { ok: true, name: 'Token PLN' }],
+    ['setiap rabu', { ok: true, schedule: 'Weekly', day: 'Wednesday' }],
+    ['ke Cash', { ok: true, toWallet: 'Cash' }, tfav],
+    ['#food', { ok: false, error: 'fav_transfer_category' }, tfav],
+    ['Token PLN', { ok: true, name: 'Token PLN' }],
+    ['Token PLN 150rb', { ok: true, name: 'Token PLN', amount: 150000 }],
+    ['keyword bayar mobil, cicilan mobil', { ok: true, keywords: ['bayar mobil', 'cicilan mobil'] }],
+    ['tanpa keyword', { ok: true, keywords: [] }],
+    ['nama Token PLN plus', { ok: true, name: 'Token PLN plus' }],
+    ['jadi', { ok: false, error: 'fav_edit_unclear' }]
+  ];
+  edits.forEach(function (c) { if (checkCase_('fav edit: ' + c[0], e(c[0], c[2]), c[1])) pass++; });
+
+  const favs = [{ id: 'FAV-001', name: 'Belanja bulanan' }, { id: 'FAV-002', name: 'Belanja' }, { id: 'FAV-003', name: 'Listrik' },
+    { id: 'FAV-004', name: 'Bayar cicilan mobil', keywords: ['bayar mobil', 'cicilan mobil'] }];
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  t('split with jadi', splitFavEdit_('belanja bulanan jadi 250rb', favs), ['belanja bulanan', '250rb']);
+  t('split without jadi: longest name', splitFavEdit_('belanja bulanan 250rb', favs), ['Belanja bulanan', '250rb']);
+  t('find exact beats prefix', findFavorites_(favs, 'belanja').map(function (f) { return f.id; }), ['FAV-002']);
+  t('find by part', findFavorites_(favs, 'bulanan').map(function (f) { return f.id; }), ['FAV-001']);
+  t('find by ID', findFavorites_(favs, 'fav-003').map(function (f) { return f.id; }), ['FAV-003']);
+  t('find by keyword', findFavorites_(favs, 'Bayar  Mobil').map(function (f) { return f.id; }), ['FAV-004']);
+  t('typed text = keyword', favMatchesText_(favs[3], 'cicilan mobil'), true);
+  t('typed text = part of a keyword is not a match', favMatchesText_(favs[3], 'mobil'), false);
+  const total = cases.length + edits.length + 8;
+  console.log((pass === total ? 'PASS' : 'FAIL') + ': testFavParser ' + pass + '/' + total);
+}
+
+/** Due dates, "already answered" and the prompt window (no sheet needed). */
+function testFavSchedule() {
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: testValue_(actual) }, { v: expected })) pass++; };
+  const D = function (y, m, d) { return new Date(y, m - 1, d); };
+  const monthly = function (day, extra) { return Object.assign({ schedule: 'Monthly', day: day }, extra || {}); };
+  const weekly = function (day, extra) { return Object.assign({ schedule: 'Weekly', day: day }, extra || {}); };
+  const users = [{ chatId: '1', name: 'Me', active: true }, { chatId: '2', name: 'Partner', active: true }];
+  t('monthly 1st, on 1 Nov', favOccurrenceOnOrBefore_(monthly(1), D(2026, 11, 1)), '2026-11-1');
+  t('monthly 5th, on 1 Nov → 5 Oct', favOccurrenceOnOrBefore_(monthly(5), D(2026, 11, 1)), '2026-10-5');
+  t('monthly 31st in Nov → 30 Nov', favOccurrenceOnOrBefore_(monthly(31), D(2026, 11, 30)), '2026-11-30');
+  t('monthly 31st in Feb → 28 Feb', favNextOccurrence_(monthly(31), D(2027, 2, 1)), '2027-2-28');
+  t('monthly "last"', favNextOccurrence_(monthly('last'), D(2026, 9, 3)), '2026-9-30');
+  t('next monthly 5th from 6 Nov', favNextOccurrence_(monthly(5), D(2026, 11, 6)), '2026-12-5');
+  t('weekly Monday, on Sun 1 Nov 2026 → 26 Oct', favOccurrenceOnOrBefore_(weekly('Monday'), D(2026, 11, 1)), '2026-10-26');
+  t('weekly senin next from Sun 1 Nov', favNextOccurrence_(weekly('senin'), D(2026, 11, 1)), '2026-11-2');
+  t('bad day → null', favOccurrenceOnOrBefore_(monthly('abc'), D(2026, 11, 1)), null);
+  t('before start → nothing due', favDueOccurrence_(monthly(1, { start: D(2026, 12, 1) }), D(2026, 11, 15)), null);
+  t('from start → due', favDueOccurrence_(monthly(1, { start: D(2026, 11, 1) }), D(2026, 11, 3)), '2026-11-1');
+  const occ = D(2026, 11, 1);
+  t('not answered', favAnswered_(monthly(1), occ), false);
+  t('logged 3 days early counts', favAnswered_(monthly(1, { lastLogged: D(2026, 10, 29) }), occ), true);
+  t('logged for last month does not count', favAnswered_(monthly(1, { lastLogged: D(2026, 10, 2) }), occ), false);
+  t('logged late counts', favAnswered_(monthly(1, { lastLogged: D(2026, 11, 4) }), occ), true);
+  t('skipped this one', favAnswered_(monthly(1, { lastSkipped: D(2026, 11, 1) }), occ), true);
+  t('skipped last month only', favAnswered_(monthly(1, { lastSkipped: D(2026, 10, 1) }), occ), false);
+  t('ordinal', [1, 2, 3, 4, 11, 12, 13, 21, 22, 31].map(ordinal_).join(' '), '1st 2nd 3rd 4th 11th 12th 13th 21st 22nd 31st');
+  t('recipients: All', favRecipients_({ remind: 'All' }, users), ['1', '2']);
+  t('recipients: Partner', favRecipients_({ remind: 'partner' }, users), ['2']);
+  t('ymd round trip', fromYmd_(ymd_(D(2026, 11, 1))), '2026-11-1');
+  t('same Chat ID on two Users rows → reminded once', favRecipients_({ remind: 'All' },
+    [{ chatId: '1', name: 'Me', active: true }, { chatId: '1', name: 'Partner', active: true }]), ['1']);
+  console.log((pass === 22 ? 'PASS' : 'FAIL') + ': testFavSchedule ' + pass + '/22');
+}
+
+/** Which debt reminders go out on which day, and to whom (no sheet needed). */
+function testReminders() {
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  const D = function (y, m, d) { return new Date(y, m - 1, d, 8, 15); };
+  const plan = function (date) {
+    const p = reminderPlan_(date, 'Monday', 1);
+    return (p.daily ? 'D' : '') + (p.weekly ? 'W' : '') + (p.monthly ? 'M' : '');
+  };
+  t('Tue 3 Nov 2026 = daily', plan(D(2026, 11, 3)), 'D');
+  t('Mon 2 Nov 2026 = weekly', plan(D(2026, 11, 2)), 'W');
+  t('Sun 1 Nov 2026 = monthly', plan(D(2026, 11, 1)), 'M');
+  t('Mon 1 Feb 2027 = weekly + monthly merged', plan(D(2027, 2, 1)), 'WM');
+  t('monthly date 31 in Nov → the 30th', reminderPlan_(D(2026, 11, 30), 'Monday', 31).monthly, true);
+
+  const now = D(2026, 11, 3);
+  const rec = function (id, extra) {
+    return Object.assign({ id: id, parent: '', type: 'Piutang', term: 'Short', name: 'Budi', status: 'Open', remaining: 100000,
+      start: D(2026, 10, 25), due: null, snoozed: null }, extra || {});
+  };
+  const debts = [
+    rec('PTG-001'),                                            // open 9 days, no due date → weekly only
+    rec('PTG-002', { start: D(2026, 11, 2) }),                 // open 1 day → no
+    rec('PTG-003', { due: D(2026, 11, 5) }),                   // due in 2 days → yes
+    rec('PTG-004', { due: D(2026, 11, 30) }),                  // due in 27 days → no
+    rec('HTG-001', { type: 'Hutang', due: D(2026, 10, 30) }),  // overdue → yes
+    rec('PTG-005', { term: 'Long' }),                          // long-term → monthly only
+    rec('PTG-006', { snoozed: D(2026, 11, 3) }),               // snoozed until today → no
+    rec('PTG-007', { snoozed: D(2026, 11, 2), due: D(2026, 11, 4) }), // snooze over → yes
+    rec('PTG-008', { status: 'Paid' }),                        // closed → no
+    rec('PTG-010', { name: 'Budi, Andi' }),                    // group parent → monthly only
+    rec('PTG-010-A', { parent: 'PTG-010', name: 'Budi' }),
+    rec('PTG-010-B', { parent: 'PTG-010', name: 'Andi', status: 'Paid' })
+  ];
+  const due = debts.filter(function (d) { return dailyDue_(d, debts, now, 3); }).map(function (d) { return d.id; });
+  t('daily picks due-soon and overdue only, not snoozed', due, ['PTG-003', 'HTG-001', 'PTG-007']);
+  const top = debts.filter(function (d) { return !d.parent; });
+  const daily = buildDailyReminder_(top, debts, now, 3, false);
+  t('daily message ids', daily.ids, ['PTG-003', 'HTG-001', 'PTG-007']);
+  t('overdue shown', daily.text.indexOf('overdue 4 days') !== -1, true);
+  const monthly = buildSummaryReminder_(top, debts, now, { weekly: false, monthly: true }, false);
+  t('monthly = long-term + groups', monthly.ids, ['PTG-005', 'PTG-010']);
+  t('monthly lists open group members only', monthly.text.indexOf('PTG-010-A') !== -1 && monthly.text.indexOf('PTG-010-B') === -1, true);
+  const weekly = buildSummaryReminder_(top, debts, now, { weekly: true, monthly: false }, false);
+  t('weekly = every open record', weekly.ids.length, 9);
+  t('nothing open → no message', buildSummaryReminder_([], debts, now, { weekly: true }, false), null);
+
+  const owners = debtOwners_([{ 'debt id': 'PTG-001', 'logged by': 'Me' }, { 'debt id': 'PTG-010-A', 'logged by': 'Partner' },
+    { 'debt id': 'PTG-001', 'logged by': 'Partner' }]);
+  t('owner = first row', owners['PTG-001'], 'Me');
+  t('group owner from a sub-record row', owners['PTG-010'], 'Partner');
+  const users = [{ chatId: '1', name: 'Me', active: true }, { chatId: '2', name: 'Partner', active: true }];
+  const per = debtsByRecipient_([rec('PTG-001'), rec('PTG-010'), rec('PTG-099')], owners, users);
+  t('records go to their owner; unknown → both', [per['1'].map(function (d) { return d.id; }), per['2'].map(function (d) { return d.id; })],
+    [['PTG-001', 'PTG-099'], ['PTG-010', 'PTG-099']]);
+  t('hour parse', [parseHour_('08:00'), parseHour_('18'), parseHour_('x')], [8, 18, 8]);
+  const dup = debtsByRecipient_([rec('PTG-099')], owners, [{ chatId: '1', name: 'Me', active: true }, { chatId: '1', name: 'Partner', active: true }]);
+  t('same Chat ID twice → record listed once', dup['1'].map(function (d) { return d.id; }), ['PTG-099']);
+  // One morning message: one item keeps its buttons, two or more = plain list
+  const fav1 = { fav: { id: 'FAV-001', name: 'Listrik', type: 'Expense', valueType: 'Fixed', amount: 150000, category: 'Bills', wallet: 'BCA', fee: 0 }, occ: D(2026, 11, 3) };
+  const fav2 = { fav: { id: 'FAV-002', name: 'Kos', type: 'Expense', valueType: 'Fixed', amount: 2000000, category: 'Bills', wallet: 'BCA', fee: 0 }, occ: D(2026, 11, 1) };
+  const one = buildMorningMessage_([fav1], null, now);
+  t('one favorite → its buttons', [!!one.markup, one.favButtons], [true, true]);
+  const oneDebt = buildMorningMessage_([], { kind: 'daily', text: 'x', ids: ['PTG-003'] }, now);
+  t('one daily debt → snooze button', oneDebt.markup.inline_keyboard[0][0].callback_data, 'S|PTG-003');
+  const two = buildMorningMessage_([fav1, fav2], { kind: 'daily', text: '⏰ due', ids: ['PTG-003'] }, now);
+  t('several → one list, no buttons', [two.markup, two.text.indexOf('Listrik') !== -1 && two.text.indexOf('Kos') !== -1 && two.text.indexOf('⏰ due') !== -1], [undefined, true]);
+  t('nothing → no message', buildMorningMessage_([], null, now), null);
+  console.log((pass === 21 ? 'PASS' : 'FAIL') + ': testReminders ' + pass + '/21');
+}

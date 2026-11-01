@@ -206,6 +206,7 @@ function getSchema_() {
     { name: T.FAVORITES, columns: [
       { h: 'Favorite ID', w: 90 },
       { h: 'Name', w: 160 },
+      { h: 'Keywords', w: 200 },
       { h: 'Type', list: LISTS.FAV_TYPES, w: 90 },
       { h: 'Value Type', list: LISTS.VALUE_TYPES, w: 90 },
       { h: 'Amount', fmt: FMT.RP },
@@ -215,7 +216,10 @@ function getSchema_() {
       { h: 'Default Fee', fmt: FMT.RP },
       { h: 'Schedule', list: LISTS.SCHEDULES, w: 90 },
       { h: 'Day/Date', w: 90 },
+      { h: 'Start Date', fmt: FMT.DATE },
+      { h: 'Remind', w: 90 },
       { h: 'Last Logged', fmt: FMT.DATE },
+      { h: 'Last Skipped', fmt: FMT.DATE },
       { h: 'Active', list: LISTS.YES_NO, w: 80 }
     ] },
 
@@ -635,6 +639,40 @@ function upgradeMissingTabs_(ss) {
 }
 
 /**
+ * Adds schema columns an existing tab doesn't have yet (plain columns only,
+ * e.g. Favorites → Start Date, Remind, Last Skipped), each right after the
+ * column it follows in the schema, with header style, format and dropdown.
+ * Existing columns and data are never changed.
+ */
+function upgradeMissingColumns_(ss, tabName) {
+  const sheet = ss.getSheetByName(tabName);
+  if (sheet === null) return tabName + ': tab not found';
+  const cols = getSchema_().filter(function (t) { return t.name === tabName; })[0].columns;
+  const added = [];
+  cols.forEach(function (c, i) {
+    const map = getHeaderMap_(sheet);
+    if (c.formula || c.h === '' || map[c.h.toLowerCase()] !== undefined) return;
+    let after = sheet.getLastColumn(); // 1-based column to insert after
+    for (let k = i - 1; k >= 0; k--) {
+      if (map[cols[k].h.toLowerCase()] !== undefined) { after = map[cols[k].h.toLowerCase()] + 1; break; }
+    }
+    sheet.insertColumnAfter(after);
+    const col = after + 1;
+    sheet.getRange(1, col).setValue(c.h).setFontWeight('bold').setBackground(HEADER_BG).setVerticalAlignment('middle');
+    sheet.setColumnWidth(col, c.w || 130);
+    const data = sheet.getRange(2, col, sheet.getMaxRows() - 1, 1);
+    data.clearDataValidations();
+    data.setNumberFormat(c.fmt || 'General');
+    if (c.list) {
+      data.setDataValidation(SpreadsheetApp.newDataValidation()
+        .requireValueInList(c.list, true).setAllowInvalid(true).build());
+    }
+    added.push(c.h);
+  });
+  return tabName + ': ' + (added.length ? 'added ' + added.join(', ') : 'columns already up to date');
+}
+
+/**
  * Run from the editor after an update that adds columns or settings.
  * Upgrades the main sheet and the template, then checks the main sheet.
  * Safe to run more than once; your data and values are never changed.
@@ -646,6 +684,7 @@ function upgradeSheets() {
     console.log(ss.getName() + ' → ' + upgradeMissingTabs_(ss));
     console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeDebtColumns_(ss));
+    console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.FAVORITES));
   });
   upgradeSettings();
   validateSheet();

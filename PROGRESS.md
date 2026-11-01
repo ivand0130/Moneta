@@ -3,11 +3,13 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 4 — DONE (2026-09-28). Telegram checklist passed.
-Phase 3, 2B, 2, 1, 0 — DONE.
-Next: Phase 5 — Favorites and reminders (incl. the debt reminders: daily
-08:00, Monday weekly, monthly 1st, snooze — the Hutang_Piutang tab already
-has Last Reminder and Snoozed Until).
+Phase 5 — BUILT, first test feedback fixed and pushed (2026-11-01), waiting
+for the owner's re-test. Owner setup: new deployment version, upgradeSheets
+(adds the Favorites Keywords column, removes "Debt Reminder After Days"),
+add the partner's Chat ID to Settings → Users.
+Phase 4, 3, 2B, 2, 1, 0 — DONE.
+Next: Phase 6 — Investments (adds the last-day 12:00 price reminder as a
+new slot in reminderSlots_ in Reminders.gs).
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)
@@ -236,6 +238,87 @@ Still to change in code that is already built:
     Expense rows), so budgets, Spent column, reports and Dashboard agree
   - Missing Contacts / Hutang_Piutang tabs no longer break other messages
   - Tests: testDebtParser 51, testShares 5
+- Phase 5 (favorites and reminders)
+  - Owner decisions: debt reminders go to whoever logged the record
+    (first Transactions row with its Debt ID → Logged By; unknown → both);
+    favorites have a Remind column (Me / Partner / All, default All); an
+    unanswered prompt is asked again each morning until it's logged/skipped
+    or the next due date; one message per favorite; [Yes] on a scheduled
+    prompt saves right away (the normal preview only if previewChecks_ has a
+    warning or the month is closed); snooze only pauses the daily reminder;
+    an expense favorite's default fee = a linked "Admin & Bank Fees" expense
+    on top (a transfer's fee still comes out of the amount); /fav delete
+    removes the row
+  - Favorites.gs: parseFavAdd_ / parseFavEdit_ / extractFavSchedule_ (pure).
+    Monthly "setiap tanggal 1 (September 2026)", "tiap bulan tgl 5",
+    "tgl 5 setiap bulan", "tanggal 5", "monthly on the 5th"; weekly
+    "setiap senin", "tiap minggu hari sabtu", "every friday"; "variable",
+    "admin 1rb", "remind Partner", "tanpa jadwal", "tanpa admin",
+    "nama <new>". No amount = Variable. Transfer without words → "Top up
+    GoPay" / "Transfer BCA → Jago". Days 29–31 = last day of shorter months
+  - Favorites tab read every time; rows typed in the sheet get an ID
+    (ensureFavoriteIds_) and, if scheduled without Start Date, Start Date =
+    next due date. IDs never reuse a number seen in Favorites or
+    Transactions (maxFavoriteNumber_). favProblems_ flags unknown
+    wallet/category/day in /fav and skips them in prompts (Logs tab)
+  - /fav (list + buttons), /fav <name>, plain text = exact favorite name,
+    /fav add, /fav edit <name> jadi <change> (preview shows "was …"),
+    /fav delete. Logging reuses the trx flow: draft.favId → Favorite ID +
+    Input Source "Favorite" on every row, Last Logged (midnight) inside the
+    save lock, afterSave_ budget message, other users' prompt buttons removed
+  - Scheduled prompts: buttons "F|y|c|s|<favId>|<yyyymmdd>" (not tied to the
+    10-min pending). Answered = Last Logged ≥ due − 7 days (weekly 3) or Last
+    Skipped ≥ due. Double taps guarded by a 30s cache key. FAV_PROMPTS
+    Script Property keeps the latest prompt per favorite + chat
+  - Reminders.gs: runReminders (hourly trigger) → reminderSlots_ (only
+    "morning" now). Slot hour from Settings, first run at/after it, last run
+    day in REMINDER_STATE (written before sending → never twice; a missed
+    hour catches up later that day). Morning: debts (Monday weekly / 1st
+    monthly / merged / else daily) + favorite prompts. Daily = open
+    short-term, non-group, not snoozed, due within "Debt Reminder Days
+    Before Due" or overdue, or open ≥ "Debt Reminder After Days" (new
+    setting, 3). Weekly = all open (short-term, then long-term & groups);
+    monthly = long-term & groups with open members. Amounts via money_
+    (Hide amounts). Last Reminder written per record. Snooze buttons per
+    record + "Snooze all" (ids read from the message's own buttons) set
+    Snoozed Until = tomorrow
+  - Editor helpers: installReminderTrigger (replaces an old one, prints the
+    trigger list; expected 2), sendRemindersNow (test), showReminderState
+  - Sheet: Favorites columns Start Date, Remind, Last Skipped
+    (upgradeMissingColumns_, run by upgradeSheets); setColumnById_ in
+    Sheets.gs writes one column by ID in one call; loadDebts_ reads Snoozed
+    Until; Settings rows now use SETTING constants
+  - Tests: testFavParser 37, testFavSchedule 21, testReminders 16; Node fake
+    end-to-end run of add/list/log/edit/delete, prompts, skip, re-prompt,
+    snooze, weekly/monthly/merged, dispatcher catch-up
+  - Fixes after the owner's first test (2026-11-01):
+    - Favorites may use any everyday wallet (e.g. savings): draft.anyWallet
+      makes askWallet_ offer every non-investment wallet, not only Spending
+      groups. (A wallet whose group is in "Investment Wallet Groups" stays blocked)
+    - "Partner is not a user": the partner's Chat ID was not in Settings →
+      Users. Error text now says a user needs a Chat ID there
+    - /fav edit: leftover words = the new name ("jadi Token PLN"); "nama X" still works
+    - Reminders sent twice: sendRemindersNow didn't mark the morning as done,
+      so the trigger sent again. Now it marks it, and every person gets the
+      morning message at most once a day ("sent|<chatId>" in REMINDER_STATE;
+      sendRemindersNow forces a resend for testing)
+    - ONE morning message per person (buildMorningMessage_): favorites due +
+      debt part. Exactly one item keeps its buttons (favorite prompt or
+      [💤 Snooze]); two or more = plain list, log with /fav or by typing.
+      sendFavoritePrompts_/sendDebtReminders_ → dueFavoritesByChat_ /
+      debtPartsByChat_
+    - Favorites Keywords column (after Name, comma-separated, typed in the
+      sheet or "keyword a, b" / "tanpa keyword" in /fav add/edit). A message
+      that is exactly a name or keyword logs that favorite, checked BEFORE
+      the debt parser (so "bayar mobil" isn't a debt payment)
+    - Daily debt reminder = short-term records WITH a due date that's near or
+      overdue only; no due date → weekly list only. "Debt Reminder After
+      Days" removed (OBSOLETE_SETTINGS)
+    - /fav off <name> / /fav on <name> (also pause/resume/nonaktif/aktif)
+    - Tests: testFavParser 46, testReminders 20
+    - Duplicate line in the morning list: two Users rows with the same Chat ID
+      counted as two people. uniqueChatIds_ now sends/lists per chat once
+      (favorites and debts); /fav flags two favorites with the same name
 
 ## Known issues
 - (Resolved in Phase 4) Conversions are Expense/Income rows with Direction
@@ -253,6 +336,17 @@ Still to change in code that is already built:
   it isn't installed, /saldo warns but budget messages just stay
 - The "Monthly Budget" column is only used for Expense categories; budgets
   typed on other types are ignored (by design)
+- Reminder times are whole hours and the hourly trigger isn't minute-exact
+  (08:00 means "some time between 08:00 and 09:00"). Accepted
+- Weekly/monthly summaries have no Snooze (by design); the weekly summary
+  for a user lists their own records plus records whose owner is unknown.
+  Snooze only appears when the morning message has exactly one item
+- clasp 3.4 prints "Skipping push." when the online appsscript.json differs
+  (here only a trailing newline); `clasp push --force` after checking
+- A favorite paid more than 7 days early (3 for weekly) still gets its
+  prompt on the due date; tap Skip
+- Phase 8 report ("paid vs skipped") should count Transactions rows by
+  Favorite ID (one per Link ID) and Last Skipped in the month
 
 ## Notes / decisions made during build
 - Formulas written by script must be written while the sheet locale is
@@ -268,7 +362,8 @@ Still to change in code that is already built:
   "New deployment", so the webhook URL stays the same
 - Script Properties: BOT_TOKEN, GEMINI_KEY, WEB_APP_URL, WEBHOOK_KEY (auto),
   MAIN_SHEET_ID, TEMPLATE_ID (set by createTemplate), ALLOWED_CHAT_IDS
-  (fallback only), RECENT_UPDATES and DELETE_QUEUE (bot-written). Reserved:
+  (fallback only), RECENT_UPDATES, DELETE_QUEUE, REMINDER_STATE and
+  FAV_PROMPTS (bot-written). Reserved:
   ARCHIVE_FOLDER_ID, RECEIPTS_FOLDER_ID. PASSWORD_HASH is no longer used
   (the password lives in Settings) and can be deleted
 - Every code change needs Deploy → Manage deployments → Edit → New version;

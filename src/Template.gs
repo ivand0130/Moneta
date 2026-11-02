@@ -92,6 +92,8 @@ function getSchema_() {
       } },
       { h: 'Owner', ref: [T.SETTINGS, 'Owners'] },
       { h: 'Default Transfer Fee', fmt: FMT.RP, w: 150 },
+      // Receipts from this app suggest this wallet (e.g. GoPay, OVO, DANA). Several wallets with the same issuer → asked.
+      { h: 'Receipt Issuer', w: 120 },
       { h: 'Active', list: LISTS.YES_NO, w: 80 }
     ] },
 
@@ -132,7 +134,8 @@ function getSchema_() {
       // sums its sub-records PTG-010-A, -B…), so /undo and sheet edits always stay correct.
       { h: 'Added', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Type', 'Addition'); } },
       { h: 'Paid', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Type', 'Settlement'); } },
-      { h: 'Converted', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Direction', 'None'); } },
+      // A Hutang row with Direction None is a split share someone else paid (nothing moved yet), not a conversion.
+      { h: 'Converted', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Direction', 'None', ',' + r(TAB.TRANSACTIONS, 'Type') + ',"<>Hutang"'); } },
       { h: 'Remaining', fmt: FMT.RP, formula: function (r) {
         const D = T.DEBTS;
         return 'MAP(' + r(D, 'Debt ID') + ',' + r(D, 'Original') + ',' + r(D, 'Added') + ',' + r(D, 'Paid') + ',' +
@@ -348,10 +351,10 @@ function getSchema_() {
  * Per debt row: sum of Transactions amounts with this Debt ID (and its
  * sub-records "ID-*") where column `col` equals `value`.
  */
-function debtSumFormula_(r, col, value) {
+function debtSumFormula_(r, col, value, more) {
   const D = TAB.DEBTS, X = TAB.TRANSACTIONS;
   const sum = function (idExpr) {
-    return 'SUMIFS(' + r(X, 'Amount') + ',' + r(X, 'Debt ID') + ',' + idExpr + ',' + r(X, col) + ',"' + value + '")';
+    return 'SUMIFS(' + r(X, 'Amount') + ',' + r(X, 'Debt ID') + ',' + idExpr + ',' + r(X, col) + ',"' + value + '"' + (more || '') + ')';
   };
   return 'MAP(' + r(D, 'Debt ID') + ',LAMBDA(id,IF(id="",,' + sum('id') + '+' + sum('id&"-*"') + ')))';
 }
@@ -1018,6 +1021,16 @@ function fillInvestmentWallets_(ss) {
   return 'investment wallets: ' + (done.length ? done.join('; ') : 'already filled');
 }
 
+/** Phase 7: the Input Source dropdown becomes Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet. */
+function upgradeInputSources_(ss) {
+  const sheet = ss.getSheetByName(TAB.TRANSACTIONS);
+  const col = getHeaderMap_(sheet)['input source'];
+  if (col === undefined) return 'Input Source: column not found';
+  sheet.getRange(2, col + 1, sheet.getMaxRows() - 1, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(LISTS.INPUT_SOURCES, true).setAllowInvalid(true).build());
+  return 'Input Source: dropdown = ' + LISTS.INPUT_SOURCES.join(' / ');
+}
+
 /** Adds a name to the Settings → Wallet Groups helper list (the dropdown source) if it's missing. */
 function addWalletGroupOption_(ss, name) {
   const sheet = ss.getSheetByName(TAB.SETTINGS);
@@ -1048,8 +1061,9 @@ function upgradeSheets() {
     console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.WALLETS));
     console.log(ss.getName() + ' → ' + fillInvestmentWallets_(ss));
     console.log(ss.getName() + ' → ' + upgradeWalletTypes_(ss));
-    [TAB.INVESTMENTS, TAB.SALES, TAB.INV_SUMMARY].forEach(function (t) { console.log(ss.getName() + ' → ' + refreshFormulas_(ss, t)); });
+    [TAB.INVESTMENTS, TAB.SALES, TAB.INV_SUMMARY, TAB.DEBTS].forEach(function (t) { console.log(ss.getName() + ' → ' + refreshFormulas_(ss, t)); });
     console.log(ss.getName() + ' → ' + addWalletGroupOption_(ss, 'Investment Wallet'));
+    console.log(ss.getName() + ' → ' + upgradeInputSources_(ss));
     console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeDebtColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.FAVORITES));

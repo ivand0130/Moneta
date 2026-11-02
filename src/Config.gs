@@ -16,11 +16,14 @@ const PROP = {
                                         // can't be opened (normally: Users table)
   MAIN_SHEET_ID: 'MAIN_SHEET_ID',       // Main Google Sheet ID (set by createTemplate)
   ARCHIVE_FOLDER_ID: 'ARCHIVE_FOLDER_ID',
+  RECEIPTS_FOLDER_ID: 'RECEIPTS_FOLDER_ID', // Receipt images (set with /setreceipts; made on the first receipt)
   TEMPLATE_ID: 'TEMPLATE_ID',           // Clean template sheet (set by createTemplate)
   RECENT_UPDATES: 'RECENT_UPDATES',     // Written by the bot; see showRecentUpdates()
   DELETE_QUEUE: 'DELETE_QUEUE',         // Backup of the auto-delete queue
   REMINDER_STATE: 'REMINDER_STATE',     // Last day each reminder slot ran (runReminders)
-  FAV_PROMPTS: 'FAV_PROMPTS'            // Latest favorite prompt message per favorite + chat
+  FAV_PROMPTS: 'FAV_PROMPTS',           // Latest favorite prompt message per favorite + chat
+  OCR_QUEUE: 'OCR_QUEUE',               // Bill photos waiting to be read by the cleanup trigger
+  OCR_RUNNING: 'OCR_RUNNING'            // Bill photos being read (a stuck one gets an error after 7 min)
 };
 
 /** Tab names in the main sheet. */
@@ -51,7 +54,7 @@ const LISTS = {
     'Settlement', 'Addition', 'Conversion', 'Investment Buy', 'Investment Sell'],
   DIRECTIONS: ['In', 'Out', 'Transfer', 'None'], // None = no money moves (debt conversions)
   CATEGORY_SOURCES: ['Manual', 'Keyword', 'AI'],
-  INPUT_SOURCES: ['Text', 'OCR', 'Favorite', 'Sheet'],
+  INPUT_SOURCES: ['Text', 'OCR-GoPay', 'OCR-Receipt', 'Favorite', 'Sheet'],
   CATEGORY_TYPES: ['Income', 'Expense', 'Investment', 'Adjustment'],
   // Cash, or an investment wallet whose type sets the unit: Emas → gram, Saham → lembar, Others → typed.
   // ("Investment" from before Phase 6 still works and counts as Others.)
@@ -74,6 +77,7 @@ const LISTS = {
 const SETTING = {
   AI_ENABLED: 'AI Enabled',
   GEMINI_MODEL: 'Gemini Model',
+  GEMINI_VISION_MODEL: 'Gemini Vision Model',
   LARGE_AMOUNT: 'Large Amount Threshold',
   DUPLICATE_MINUTES: 'Duplicate Window (minutes)',
   HIDE_AMOUNTS: 'Hide amounts',
@@ -105,6 +109,7 @@ const SETTING_ROWS = [
   ['Timezone', 'Asia/Jakarta', 'Info only. The bot always uses Asia/Jakarta.'],
   [SETTING.AI_ENABLED, 'Yes', 'Yes = Gemini reads messages the rules cannot (e.g. "kopi dua puluh ribu") and, later, bill photos. It never picks categories. No = rules only.'],
   [SETTING.GEMINI_MODEL, 'gemini-flash-latest', 'Gemini model name. Change it here if Google renames models.'],
+  [SETTING.GEMINI_VISION_MODEL, 'gemini-flash-lite-latest', 'Model for bill photos (a light model is much faster). Empty = same as Gemini Model. If it fails, the bot uses Gemini Model.'],
   [SETTING.LARGE_AMOUNT, '5000000', 'Amounts above this (Rp) get a warning in the preview.'],
   [SETTING.DUPLICATE_MINUTES, '5', 'Warn if the same type + amount + note was logged within this many minutes.'],
   [SETTING.HIDE_AMOUNTS, 'Yes', 'Yes = amounts in /saldo, /inv, /open, /report are hidden until tapped.'],

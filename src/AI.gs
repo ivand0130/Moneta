@@ -14,29 +14,36 @@ const GEMINI_TRIES = 3; // retries only for 503 / 500 / network errors
  * Sends a prompt and returns the parsed JSON answer, or null on any failure.
  * The key goes in a header (not the URL) so it can never appear in logs.
  */
-function callGeminiJson_(prompt, source) {
+function callGeminiJson_(prompt, source, image, tries) {
+  const maxTries = tries || GEMINI_TRIES; // photos use 2: a slow vision call shouldn't keep the user waiting minutes
   if (!getSettingYes_(SETTING.AI_ENABLED)) return null;
   const key = getProp_(PROP.GEMINI_KEY);
   if (key === null) {
     logAiFailure_(source, 'GEMINI_KEY is not set');
     return null;
   }
-  const model = getSetting_(SETTING.GEMINI_MODEL);
+  const textModel = getSetting_(SETTING.GEMINI_MODEL);
+  // Photos may use a lighter, faster model (Settings → Gemini Vision Model); text keeps the main one.
+  let model = image ? (String(getSetting_(SETTING.GEMINI_VISION_MODEL) || '').trim() || textModel) : textModel;
+  const started = Date.now();
+  const trace = function (text) { if (image || source === 'ocr') recordEvent_('ocr: Gemini ' + model + ' ' + text + ' after ' + Math.round((Date.now() - started) / 1000) + 's'); };
+  const body = {
+    // image = { mimeType, data (base64) } for bill photos (Phase 7)
+    contents: [{ role: 'user', parts: [{ text: prompt }].concat(image ? [{ inline_data: { mime_type: image.mimeType, data: image.data } }] : []) }],
+    generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+  };
   const request = {
     method: 'post',
     contentType: 'application/json',
     headers: { 'x-goog-api-key': key },
     muteHttpExceptions: true,
-    payload: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0, responseMimeType: 'application/json' }
-    })
+    payload: JSON.stringify(body)
   };
   // Google's free tier sometimes answers 503 "high demand" (or 500): wait 1s, then 2s, and try
   // again — at most 3 tries (~3s extra), so a busy moment doesn't lose the AI answer.
   let response;
   let code = 0;
-  for (let attempt = 1; attempt <= GEMINI_TRIES; attempt++) {
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
     try {
       response = UrlFetchApp.fetch(GEMINI_URL + encodeURIComponent(model) + ':generateContent', request);
       code = response.getResponseCode();
@@ -44,7 +51,15 @@ function callGeminiJson_(prompt, source) {
       response = null;
       code = 0; // network error: also worth one more try
     }
-    if (code === 200 || (code !== 0 && code !== 500 && code !== 503) || attempt === GEMINI_TRIES) break;
+    trace('try ' + attempt + ' → ' + (code || 'network error') +
+      (response && code !== 200 ? ' ' + response.getContentText().replace(/\s+/g, ' ').slice(0, 160) : ''));
+    // The photo model refused the request (not available on this key, unsupported option…): use the main model instead.
+    if (image && model !== textModel && code >= 400 && code < 500 && code !== 429) {
+      model = textModel;
+      attempt--;
+      continue;
+    }
+    if (code === 200 || (code !== 0 && code !== 500 && code !== 503) || attempt === maxTries) break;
     Utilities.sleep(1000 * attempt);
   }
   if (response === null) {

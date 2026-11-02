@@ -135,6 +135,18 @@ function stepDebt_(p, ctx) {
       return askDebtCategory_(p, ctx, d.overpay === 'income' ? 'Income' : 'Expense',
         'Which category is the extra ' + formatRp_(d.amount - owed) + '?', 'xc');
     }
+    // Paying back a hutang is money out, so it counts as an Expense (owner, 2026-11-02). A split-bill hutang
+    // already has its category (e.g. Food); otherwise ask. The preview has a 📂 Category button to change it.
+    if (recs[0].type === 'Hutang' && !d.category) {
+      const own = recs.map(function (r) { return r.category; }).filter(function (c, i, a) { return c && a.indexOf(c) === i; });
+      if (own.length === 1 && recs.every(function (r) { return r.category; }) &&
+          ctx.categories.some(function (c) { return c.name === own[0] && c.type === 'Expense'; })) {
+        d.category = own[0];
+        d.categoryHow = 'keyword';
+      } else {
+        return askDebtCategory_(p, ctx, 'Expense', 'Paying back a hutang counts as an Expense. Which category?');
+      }
+    }
   }
   if (d.kind !== 'convert' && !findWallet_(everydayWallets_(ctx.wallets, ctx.investmentGroups), d.wallet)) {
     return askDebtWallet_(p, ctx);
@@ -198,15 +210,52 @@ function resolveDebtTarget_(p, ctx) {
     const typeWord = d.debtType ? d.debtType.toLowerCase() : 'records';
     return pickDebt_(p, pool, escapeHtml_(d.name || '') + ' has ' + pool.length + ' open ' + typeWord + ':', d.kind === 'convert');
   }
-  // Nothing open for that name (SPEC Section 14).
+  // Nothing open for that name (SPEC Section 14): offer the open records, closest name first
+  // ("krista" / "kriesta" → GMS Krista), so a typo or a short name still finds the record.
   const typeLabel = d.debtType ? d.debtType.toLowerCase() : 'hutang/piutang';
-  const rows = [];
+  const open = debts.filter(function (x) {
+    return isOpenDebt_(x) && (!d.debtType || x.type === d.debtType) && childrenOf_(debts, x.id).length === 0;
+  });
+  const near = sortByNameMatch_(open, d.name).slice(0, 8);
+  p.opts = near.map(function (x) { return x.id; });
+  const rows = near.map(function (x, i) { return [btn_(p, debtLabel_(x), 'dr', i)]; });
   if (d.kind !== 'convert' && d.debtType && d.amount) {
     rows.push([btn_(p, '➕ New ' + typeLabel + ' for ' + d.name, 'newrec')]);
   }
   rows.push(cancelRow_(p));
   return showStep_(p, 'No open ' + typeLabel + ' for <b>' + escapeHtml_(d.name || '') + '</b>. ' +
-    (rows.length > 1 ? 'Create a new one, or check the spelling?' : 'Check the spelling, or see /open.'), rows);
+    (near.length ? 'Did you mean one of these?' : (rows.length > 1 ? 'Create a new one, or check the spelling?' : 'Check the spelling, or see /open.')), rows);
+}
+
+/** Records sorted by how close their name is to the typed one (a whole word of the name first, then fewest typos). */
+function sortByNameMatch_(recs, typed) {
+  const t = String(typed || '').toLowerCase().trim();
+  const score = function (name) {
+    const n = String(name).toLowerCase();
+    const words = n.split(/\s+/).filter(String);
+    if (!t) return 99;
+    if (words.indexOf(t) !== -1) return 0;
+    if (n.indexOf(t) !== -1 || t.indexOf(n) !== -1) return 0.5;
+    const near = Math.min.apply(null, words.concat([n]).map(function (w) { return editDistance_(t, w) / Math.max(t.length, w.length); }));
+    return 1 + near;
+  };
+  return recs.map(function (r) { return { r: r, s: score(r.name) }; })
+    .sort(function (a, b) { return a.s - b.s || (a.r.id < b.r.id ? -1 : 1); })
+    .map(function (x) { return x.r; });
+}
+
+/** Levenshtein distance (typos between two short names). */
+function editDistance_(a, b) {
+  let prev = [];
+  for (let j = 0; j <= b.length; j++) prev.push(j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur.push(Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
 }
 
 /** Payment order (owner's rule): nearest due date first, then no due date oldest first. */
@@ -299,7 +348,9 @@ function debtSummary_(p) {
 function debtPreviewButtons_(p) {
   const d = p.d;
   const rows = [[btn_(p, '✅ Yes', 'y'), btn_(p, '❌ No', 'n')]];
-  if (d.kind === 'split' || d.kind === 'convert') rows[0].push(btn_(p, '📂 Category', 'ef', 'category'));
+  if (d.kind === 'split') rows.push([btn_(p, '📂 Category', 'ef', 'category'), btn_(p, '👛 Wallet', 'ef', 'wallet')]);
+  else if (d.kind === 'pay' && debtTypeOf_(p) === 'Hutang') rows.push([btn_(p, '✏️ Edit', 'e'), btn_(p, '📂 Category', 'ef', 'category')]);
+  else if (d.kind === 'convert') rows[0].push(btn_(p, '📂 Category', 'ef', 'category'));
   else rows[0].push(btn_(p, '✏️ Edit', 'e'));
   return rows;
 }
@@ -310,7 +361,7 @@ function debtPreviewButtons_(p) {
 
 function buildDebtPreview_(p, ctx, footer) {
   const d = p.d;
-  const lines = [];
+  const lines = d.ocrHeader ? [d.ocrHeader, ''] : []; // a GoPay Split Bill photo
   const dateLine = '📅 ' + formatDate_(d.date) + (d.note ? '\n📝 ' + escapeHtml_(d.note) : '');
   const newContacts = [];
   if (d.kind === 'new' && !d.group) {
@@ -326,7 +377,7 @@ function buildDebtPreview_(p, ctx, footer) {
     d.people.forEach(function (x) { lines.push('• ' + escapeHtml_(x.name) + ': ' + formatRp_(x.amount)); if (!x.known) newContacts.push(x.name); });
     lines.push('Term: ' + d.term + (d.due ? ' · Due: ' + formatDate_(d.due) : ''), dateLine);
   } else if (d.kind === 'split') {
-    lines.push('🧾 <b>Preview · Split bill</b> · <b>' + formatRp_(d.total) + '</b> paid from ' + escapeHtml_(d.wallet));
+    lines.push('🧾 <b>Preview · Split bill</b> · <b>' + formatRp_(d.total) + '</b>', '👛 Wallet: ' + escapeHtml_(d.wallet));
     if (d.me > 0) lines.push('• You: ' + formatRp_(d.me) + ' → Expense · ' + escapeHtml_(d.category) +
       ' <i>(' + (CATEGORY_HOW_LABEL[d.categoryHow] || 'you picked') + ')</i>');
     d.people.forEach(function (x) {
@@ -349,6 +400,11 @@ function buildDebtPreview_(p, ctx, footer) {
         lines.push('• ' + escapeHtml_(x.rec.id) + ': ' + formatRp_(x.amount) + ' → remaining ' + formatRp_(after) +
           ' (' + (after <= 0 ? 'Paid' : 'Partial') + ')' + (x.rec.due ? ' · due ' + formatDate_(x.rec.due) : ''));
       });
+      if (!piutang) {
+        const paid = plan.parts.reduce(function (s, x) { return s + x.amount; }, 0);
+        lines.push('🧾 ' + formatRp_(paid) + ' counted as Expense · ' + escapeHtml_(d.category) +
+          ' <i>(' + (d.categoryHow === 'keyword' ? 'from the hutang' : 'you picked') + ')</i>');
+      }
       if (plan.extra > 0) {
         lines.push('Extra ' + formatRp_(plan.extra) + ' → ' + (d.overpay === 'flip'
           ? 'new ' + (piutang ? 'hutang: you owe ' : 'piutang: owes you ') + escapeHtml_(rec.name)
@@ -435,7 +491,7 @@ function debtCallback_(p, action, arg, user) {
       if (arg === 'wallet') { d.wallet = null; d.walletChoices = null; return askDebtWallet_(p, ctx); }
       if (arg === 'category') {
         if (d.kind === 'convert') return askDebtCategory_(p, ctx, debtTypeOf_(p) === 'Piutang' ? 'Expense' : 'Income', 'Which category?');
-        return askDebtCategory_(p, ctx, 'Expense', 'Which category is your share?');
+        return askDebtCategory_(p, ctx, 'Expense', d.kind === 'pay' ? 'Which category is this payment?' : 'Which category is your share?');
       }
       break;
     case 'y':
@@ -532,7 +588,7 @@ function saveDebt_(p, ctx, user) {
   const entries = [];      // rows written, for afterSave_ (budget message)
   const created = [];      // debt IDs created
   const trx = function (e, link) {
-    const row = Object.assign({ date: d.date, wallet: d.wallet, note: d.note, toWallet: '' }, e);
+    const row = Object.assign({ date: d.date, wallet: d.wallet, note: d.note, toWallet: '', inputSource: d.inputSource || '' }, e);
     const id = writeTransaction_(ss, row, loggedBy, link);
     entries.push(row);
     saved.push(id);
@@ -592,10 +648,16 @@ function saveDebt_(p, ctx, user) {
       const piutang = rec.type === 'Piutang';
       if (d.kind === 'pay') {
         const plan = allocatePayment_(recs, d.amount); // nearest due date first, then the oldest
-        const link = plan.parts.length > 1 || plan.extra > 0 ? nextId_(trxSheet, 'Link ID', 'LNK') : '';
+        const spends = piutang ? [] : plan.parts; // a hutang payment is money out → also my Expense
+        const link = plan.parts.length > 1 || plan.extra > 0 || spends.length ? nextId_(trxSheet, 'Link ID', 'LNK') : '';
         plan.parts.forEach(function (x) {
           trx({ type: 'Settlement', direction: piutang ? 'In' : 'Out', amount: x.amount, debtId: x.rec.id,
             note: d.note || (piutang ? rec.name + ' paid back ' : 'Paid back ' + rec.name + ' ') + x.rec.id }, link);
+        });
+        // Counted as an Expense in budgets/reports; Direction None because the Settlement row already moved the money.
+        spends.forEach(function (x) {
+          trx({ type: 'Expense', direction: 'None', amount: x.amount, category: d.category, categoryHow: d.categoryHow || 'chosen',
+            note: 'Paid back ' + rec.name + ' (' + x.rec.id + ')' }, link);
         });
         touchedIds = plan.parts.map(function (x) { return x.rec.id; });
         const ids = touchedIds.join(', ');
@@ -653,6 +715,7 @@ function saveDebt_(p, ctx, user) {
       });
     }
   }
+  if (d.image) text += attachReceiptText_(ss, saved, d.image, d.date, d.note);
   editMessage(p.chatId, p.msgId, text);
   afterSave_(ss, p.chatId, entries);
 }
@@ -672,7 +735,7 @@ function debtUndoPlan_(ss, groupRows, allRows) {
     return (r['type'] === 'Piutang' || r['type'] === 'Hutang') && String(r['debt id'] || '').trim() !== '';
   }).map(function (r) { return String(r['debt id']).trim(); });
   const reopen = groupRows.filter(function (r) {
-    return String(r['direction']) === 'None' && String(r['debt id'] || '').trim() !== '';
+    return String(r['direction']) === 'None' && r['type'] !== 'Hutang' && String(r['debt id'] || '').trim() !== '';
   }).map(function (r) { return String(r['debt id']).trim(); });
   const later = allRows.filter(function (r) {
     return ids.indexOf(String(r['trx id']).trim()) === -1 && creations.indexOf(String(r['debt id'] || '').trim()) !== -1;

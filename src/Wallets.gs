@@ -25,6 +25,7 @@ function loadWallets_(ss) {
       owner: String(r['owner'] || '').trim(),
       active: String(r['active'] || '').trim().toLowerCase() !== 'no',
       defaultFee: parseBudget_(r['default transfer fee']), // same "whole Rupiah, 0 if empty" rule
+      receiptIssuer: String(r['receipt issuer'] || '').trim(), // "GoPay": receipts from that app suggest this wallet
       row: r._row
     };
   });

@@ -300,6 +300,7 @@ function entriesOf_(d) {
       category: x.category, categoryHow: x.categoryHow, note: note, date: d.date }];
   }
   if (d.favId) out.forEach(function (e) { e.favId = d.favId; e.inputSource = 'Favorite'; });
+  else if (d.inputSource) out.forEach(function (e) { e.inputSource = d.inputSource; }); // OCR-Receipt / OCR-GoPay
   return out;
 }
 
@@ -353,6 +354,9 @@ function askAmount_(p) {
   const d = p.d;
   const rows = chunk_(d.amountOptions.map(function (v, i) { return btn_(p, formatRp_(v), 'am', i); }), 2);
   rows.push([btn_(p, '✏️ Type it', 'ef', 'amount'), btn_(p, '❌ Cancel', 'n')]);
+  if (d.amountReason === 'receipt') {
+    return showStep_(p, (d.ocrHeader ? d.ocrHeader + '\n' : '') + '🤔 The receipt shows several totals. Which one did you pay?', rows);
+  }
   showStep_(p, '🤔 The amount "' + escapeHtml_(d.amountText) + '" ' + (AMOUNT_REASONS[d.amountReason] || 'is unclear') +
     '. Which did you mean?', rows);
 }
@@ -415,7 +419,8 @@ function buildPreviewText_(p, ctx, footer) {
   const w = findWallet_(ctx.wallets, d.wallet);
   const entries = entriesOf_(d);
   const lines = [];
-  const how = function (h) { return ' <i>(' + (CATEGORY_HOW_LABEL[h] || 'you picked') + ')</i>'; };
+  if (d.ocrHeader) lines.push(d.ocrHeader, ''); // "🧾 Read from receipt: Indomaret · 24 Sep 2026 · Total Rp185.500"
+  const how = function (h) { return ' <i>(' + (CATEGORY_HOW_LABEL[h] || (h === 'issuer' ? 'from the receipt' : 'you picked')) + ')</i>'; };
   if (d.type === 'Transfer') {
     const tw = findWallet_(ctx.wallets, d.toWallet);
     const route = escapeHtml_(w.name) + ' (' + escapeHtml_(w.group) + ') → ' + escapeHtml_(tw.name) + ' (' + escapeHtml_(tw.group) + ')';
@@ -439,7 +444,8 @@ function buildPreviewText_(p, ctx, footer) {
       d.type + ' <b>' + formatRp_(d.amount) + '</b>',
       '📂 ' + escapeHtml_(d.category) + how(d.categoryHow),
       '👛 ' + escapeHtml_(w.name) + ' → ' + escapeHtml_(w.group) +
-        (d.walletHow === 'default' ? ' <i>(default for ' + escapeHtml_(d.category) + ')</i>' : ''));
+        (d.walletHow === 'default' ? ' <i>(default for ' + escapeHtml_(d.category) + ')</i>' : '') +
+        (d.walletHow === 'issuer' ? ' <i>(from the receipt)</i>' : ''));
     if (entries.length > 1) {
       lines.push('💸 + fee <b>' + formatRp_(entries[1].amount) + '</b> · ' + escapeHtml_(entries[1].category) +
         how(entries[1].categoryHow) + (d.extra.fromFav ? " <i>(favorite's fee)</i>" : ''));
@@ -448,7 +454,7 @@ function buildPreviewText_(p, ctx, footer) {
   lines.push('📅 ' + formatDate_(d.date));
   if (d.note) lines.push('📝 ' + escapeHtml_(d.note));
   if (d.readByAi) lines.push('🤖 <i>Read by AI — please check the details.</i>');
-  const warnings = previewChecks_(p, ctx, entries);
+  const warnings = (d.ocrWarnings || []).concat(previewChecks_(p, ctx, entries));
   if (warnings.length) lines.push('', warnings.join('\n'));
   lines.push('', footer);
   return lines.join('\n');
@@ -460,10 +466,12 @@ function previewChecks_(p, ctx, entries) {
   const out = [];
   const large = getSettingInt_(SETTING.LARGE_AMOUNT);
   if (large > 0 && d.amount > large) out.push('⚠️ Large amount (over ' + formatRp_(large) + ').');
-  const dup = findDuplicate_(loadTransactions_(ctx.ss), d, getSettingInt_(SETTING.DUPLICATE_MINUTES));
+  // Receipts: same total + merchant + receipt date at ANY time; text entries: same type + amount + note within a few minutes.
+  const dup = d.receipt ? findReceiptDuplicate_(loadTransactions_(ctx.ss), d)
+    : findDuplicate_(loadTransactions_(ctx.ss), d, getSettingInt_(SETTING.DUPLICATE_MINUTES));
   if (dup) {
     out.push('⚠️ Possible duplicate of ' + escapeHtml_(dup['trx id'] || 'an existing row') +
-      ' (same type, amount and note). Save it again?');
+      (d.receipt ? ' (same total, merchant and date).' : ' (same type, amount and note).') + ' Save it again?');
   }
   const deltas = walletDeltas_(entries);
   Object.keys(deltas).forEach(function (name) {
@@ -682,8 +690,10 @@ function saveTrx_(p, ctx, user) {
   });
   if (saved === null) return;
 
+  // A bill photo is downloaded again and saved to Drive only now (after Yes), then linked on the rows.
+  const receiptText = d.image ? attachReceiptText_(ctx.ss, saved.ids, d.image, d.date, d.receipt ? d.receipt.merchant : d.note) : '';
   editMessage(p.chatId, p.msgId, '✅ ' + (d.favId ? '<b>' + escapeHtml_(d.note) + '</b> saved' : 'Saved') + ' as <b>' +
-    saved.ids.join('</b> + <b>') + '</b>' + (saved.linkId ? ' (' + saved.linkId + ')' : '') + '.');
+    saved.ids.join('</b> + <b>') + '</b>' + (saved.linkId ? ' (' + saved.linkId + ')' : '') + '.' + receiptText);
   if (d.favId) closeFavPrompts_(d.favId, p.chatId, p.msgId);
   afterSave_(ctx.ss, p.chatId, entries);
   const x = d.extra;
@@ -795,7 +805,8 @@ function startUndo_(chatId, user) {
     return;
   }
   const p = newPending_(chatId, 'undo', {
-    ids: group.map(function (r) { return String(r['trx id']).trim(); }).filter(String)
+    ids: group.map(function (r) { return String(r['trx id']).trim(); }).filter(String),
+    imageUrl: imageUrlOfRows_(ss, group) // a receipt: asked afterwards whether to trash the image too
   });
   const linked = group.length > 1;
   const extra = (plan.deleteDebts.length ? '\nAlso removes record ' + plan.deleteDebts.join(', ') + ' from Hutang_Piutang.' : '') +
@@ -823,6 +834,7 @@ function undoCallback_(p, action) {
     (plan.deleteDebts.length ? ' and record ' + plan.deleteDebts.join(', ') : '') +
     (plan.reopen.length ? '; ' + plan.reopen.join(', ') + (plan.reopen.length > 1 ? ' are' : ' is') + ' open again' : '') + '.' :
     'Those entries were already gone.');
+  if (deleted.length && p.d.imageUrl) askUndoImage_(p.chatId, p.d.imageUrl);
 }
 
 // ---------------------------------------------------------------------------
@@ -966,7 +978,12 @@ function handleCallback_(cq) {
   const p = getPending_(chatId);
   if (!p || p.pid !== parts[0]) {
     answerCallbackQuery(cq.id, 'This has expired. Please send it again.');
-    dropButtons_(chatId, cq.message.message_id);
+    // Say it in the chat too (the pop-up is easy to miss): previews wait 10 minutes.
+    try {
+      editMessage(chatId, cq.message.message_id, '⌛ This expired (a preview waits 10 minutes), so nothing was saved. Send it again.');
+    } catch (err) {
+      dropButtons_(chatId, cq.message.message_id);
+    }
     return;
   }
   answerCallbackQuery(cq.id);
@@ -983,6 +1000,8 @@ function handleCallback_(cq) {
   else if (p.kind === 'contact') contactCallback_(p, action);
   else if (p.kind === 'fav') favCallback_(p, action, arg, getUserByChatId_(chatId));
   else if (p.kind === 'inv') invCallback_(p, action, arg, getUserByChatId_(chatId));
+  else if (p.kind === 'ocr') ocrCallback_(p, action, arg, getUserByChatId_(chatId));
+  else if (p.kind === 'undoimg') undoImageCallback_(p, action);
 }
 
 /** Friendly reply for a message the parser couldn't use. */

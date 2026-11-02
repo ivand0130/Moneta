@@ -127,9 +127,13 @@ function routeUpdate_(update) {
     handleText_(update.message);
     return;
   }
+  // A photo, or an image sent as a file (uncompressed): read the bill (OCR.gs). An album = one message per photo.
+  if (update.message && (update.message.photo || (update.message.document && /^image\//.test(update.message.document.mime_type || '')))) {
+    handlePhoto_(update.message);
+    return;
+  }
   if (update.message) {
-    sendMessage(String(update.message.chat.id),
-      'I can only read text for now. (GoPay Split Bill screenshots arrive in a later update.)');
+    sendMessage(String(update.message.chat.id), 'I can read text and bill photos (receipts, GoPay Split Bills). Other files are not supported.');
     return;
   }
   console.log('Ignored update type: ' + Object.keys(update).join(', '));
@@ -189,6 +193,9 @@ function handleText_(message) {
       case '/inv':
       case '/investasi':
         handleInvCommand_(message, args);
+        return;
+      case '/setreceipts':
+        setReceiptsFolder_(chatId, args);
         return;
       case '/fav':
       case '/favorite':
@@ -271,6 +278,11 @@ function buildHelpText_() {
     '• <code>beli BBCA 2 lot 9.800/lembar dari IPOT fee 3rb</code> (saved as 200 lembar) · <code>beli BTC 0,01 coin 15jt/coin</code> · <code>beli RDPU X 150,5 unit @1.520 via Bibit</code>',
     '• <code>jual BBCA 1 lot harga 10.200 ke BCA</code> (oldest purchase first) · <code>jual semua emas 1.4jt/gr</code> · /inv sell · the unit comes from the Wallet Type (Emas = gr, Saham = lembar, Others = as typed)',
     '• <code>/inv update BBCA 9.800</code>, or <code>/inv update</code> + one asset per line · /inv · <code>/inv emas</code>',
+    '',
+    '📸 <b>Bill photos</b>',
+    '• Send a photo of a receipt → expense preview (total, merchant, date). Caption adds details: <code>BCA #food</code>, <code>120rb</code>',
+    '• A GoPay Split Bill screenshot → split bill (you paid: your share + piutang; someone else paid: hutang or expense)',
+    '• Caption <code>split</code> / <code>bill</code> forces the type · images are saved to Drive with a 🧾 View receipt link · /setreceipts',
     '',
     '⭐ <b>Favorites</b> (usual transactions)',
     '• <code>/fav</code> → tap one to log it · <code>/fav listrik</code> logs it by name',

@@ -69,6 +69,17 @@ function addContact_(ss, name, aliases) {
 }
 
 /** /contact → names and aliases. */
+/** Adds an alias to a contact (e.g. the GoPay name "Budi Santoso" → Budi), if it isn't there yet. */
+function addContactAlias_(ss, name, alias) {
+  const sheet = ss.getSheetByName(TAB.CONTACTS);
+  const c = loadContacts_(ss).filter(function (x) { return x.name.toLowerCase() === String(name).toLowerCase(); })[0];
+  if (!c || c.name.toLowerCase() === String(alias).toLowerCase() ||
+      c.aliases.some(function (a) { return a.toLowerCase() === String(alias).toLowerCase(); })) return;
+  const row = readTableByHeaders_(sheet, 'Name').filter(function (r) { return String(r['name']).trim() === c.name; })[0];
+  if (!row) return;
+  writeRowsByHeaders_(sheet, row._row, [{ 'Aliases': c.aliases.concat([alias]).join(', ') }]);
+}
+
 function buildContactListText_(contacts) {
   if (contacts.length === 0) {
     return '👥 No contacts yet. They are added when you save a hutang/piutang with a new name, or with ' +

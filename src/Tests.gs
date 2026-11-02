@@ -672,7 +672,11 @@ function testDebtParser() {
   t('several names = group', people(parseDebt_('piutang 600rb Budi, Andi, Citra', ctx)), 'Budi 200000, Andi 200000, Citra 200000');
   t('"bayar listrik 200rb" is not a debt', parseDebt_('bayar listrik 200rb', ctx), null);
   t('"50rb makan" is not a debt', parseDebt_('50rb makan', ctx), null);
-  const total = cases.length + 10;
+  const recs = [{ id: 'HTG-001', name: 'Budi' }, { id: 'HTG-002', name: 'GMS Krista' }, { id: 'HTG-003', name: 'Kristo' }];
+  t('no match: closest names first (a whole word, then typos)', sortByNameMatch_(recs, 'kriesta').map(function (r) { return r.id; }),
+    ['HTG-002', 'HTG-003', 'HTG-001']);
+  t('no match: "krista" is a word of "GMS Krista"', sortByNameMatch_(recs, 'krista')[0].id, 'HTG-002');
+  const total = cases.length + 12;
   console.log((pass === total ? 'PASS' : 'FAIL') + ': testDebtParser ' + pass + '/' + total);
 }
 
@@ -1043,4 +1047,94 @@ function testInvReport() {
     [isInvestmentWallet_(bca, ['investment']), isInvestmentWallet_(ipot, ['investment']),
       spendingWallets_([bca, ipot], ['investment'], ['spending']).map(function (w) { return w.name; })], [false, true, ['BCA']]);
   console.log((pass === 15 ? 'PASS' : 'FAIL') + ': testInvReport ' + pass + '/15');
+}
+
+/** Bill photo logic: reading Gemini's answer, routing, receipts, split-bill helpers (no sheet or AI needed). */
+function testOcr() {
+  const ctx = testCtx_();
+  ctx.wallets = ctx.wallets.map(function (w) { return w.name === 'GoPay' ? Object.assign({}, w, { receiptIssuer: 'GoPay' }) : w; });
+  const now = ctx.now; // 25 Sep 2026 10:30
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  const receipt = normalizeOcr_({ readable: true, issuer: 'Indomaret', merchant: 'Indomaret Kemang', date: '2026-09-24',
+    date_confidence: 0.95, subtotal: 170000, tax: 15500, total: '185.500', total_confidence: 0.92, items: ['Beras', 'Minyak'] });
+  t('normalize: "185.500" → 185500, numbers rounded', [receipt.total, receipt.subtotal, receipt.items.length], [185500, 170000, 2]);
+  t('normalize: nothing usable', normalizeOcr_(null), null);
+  const split = normalizeOcr_({ issuer: 'GoPay', merchant: 'Sate Khas Senayan', is_split_bill: true, total: 300000, payer: 'Daniel Ivan',
+    participants: [{ name: 'Daniel Ivan', amount: 100000, confidence: 0.9 }, { name: 'Budi Santoso', amount: 120000 }, { name: 'Citra', amount: 80000 }] });
+  t('route: GoPay + participants → split', ocrRoute_(split, ''), 'split');
+  t('route: a plain receipt → receipt', ocrRoute_(receipt, ''), 'receipt');
+  const gofood = normalizeOcr_({ issuer: 'GoPay', merchant: 'GoFood · Bakmi GM', total: 65000 });
+  t('route: GoPay payment receipt (no participants) → receipt', ocrRoute_(gofood, ''), 'receipt');
+  t('route: caption "bill" forces the receipt flow', ocrRoute_(split, 'bill BCA'), 'receipt');
+  t('route: caption "split" needs a participant list', ocrRoute_(receipt, 'split'), 'receipt');
+  // Totals
+  t('one total when subtotal + tax = total', receiptTotalCandidates_(receipt), [185500]);
+  t('several totals when they do not add up', receiptTotalCandidates_(normalizeOcr_({ subtotal: 100000, tax: 11000, total: 121000 })),
+    [121000, 111000]);
+  t('other candidates from Gemini', receiptTotalCandidates_(normalizeOcr_({ total: 50000, other_totals: [55000, 50000] })), [50000, 55000]);
+  // Wallet by receipt issuer
+  t('issuer → wallet', issuerWallets_(ctx.wallets, 'GoPay GoFood').map(function (w) { return w.name; }), ['GoPay']);
+  t('no issuer match', issuerWallets_(ctx.wallets, 'Indomaret'), []);
+  // Receipt draft
+  const d1 = buildReceiptDraft_(receipt, '', ctx, now, { fileId: 'F1' }).d;
+  t('receipt draft', [d1.type, d1.amount, d1.note, testValue_(new Date(d1.date)), d1.inputSource, d1.ocrWarnings.length, d1.image.fileId],
+    ['Expense', 185500, 'Indomaret Kemang', '2026-9-24', 'OCR-Receipt', 0, 'F1']);
+  const d2 = buildReceiptDraft_(receipt, 'BCA #health 150rb kemarin obat', ctx, now).d;
+  t('caption overrides amount, wallet, category, date, adds to the note',
+    [d2.amount, d2.wallet, d2.category, testValue_(new Date(d2.date)), d2.note], [150000, 'BCA', 'Health', '2026-9-24', 'Indomaret Kemang · obat']);
+  const d3 = buildReceiptDraft_(gofood, '', ctx, now).d;
+  t('GoPay receipt → GoPay wallet from Receipt Issuer, dated today', [d3.wallet, d3.walletHow, testValue_(new Date(d3.date))],
+    ['GoPay', 'issuer', '2026-9-25']);
+  const low = buildReceiptDraft_(normalizeOcr_({ merchant: 'Toko', total: 99000, total_confidence: 0.6, date: '2026-09-20', date_confidence: 0.5 }),
+    '', ctx, now).d;
+  t('low confidence (< 80%) warnings for total and date', low.ocrWarnings.length, 2);
+  const many = buildReceiptDraft_(normalizeOcr_({ merchant: 'Resto', subtotal: 100000, tax: 11000, total: 121000 }), '', ctx, now).d;
+  t('several totals → asked', [many.amount, many.amountOptions], [null, [121000, 111000]]);
+  t('caption with an unknown tag keeps the receipt', buildReceiptDraft_(receipt, '#zzz', ctx, now).d.unknownTag, 'zzz');
+  const kw = buildReceiptDraft_(normalizeOcr_({ merchant: 'Apotek K-24', items: ['obat batuk'], total: 30000 }), '', ctx, now).d;
+  t('category from items keywords', kw.category, 'Health');
+  // Split helpers
+  t('find me by GoPay name', findMeIndexes_(split.participants, 'daniel  ivan'), [0]);
+  t('nobody matches', findMeIndexes_(split.participants, ''), []);
+  t('\"Me\" in the list is me', findMeIndexes_([{ name: 'GMS Krista' }, { name: 'Me' }], ''), [1]);
+  t('a split screen without the GoPay name → split', ocrRoute_(normalizeOcr_({ merchant: 'BANG ALI SIMP', is_split_bill: true, total: 400400,
+    participants: [{ name: 'Me', amount: 80300 }, { name: 'kia', amount: 71500 }] }), ''), 'split');
+  const rows = [{ 'trx id': 'TRX-0001', amount: 185500, date: new Date(2026, 8, 24, 9), note: 'Indomaret Kemang' }];
+  t('receipt duplicate: same total + merchant + date, any time', (findReceiptDuplicate_(rows, d1) || {})['trx id'], 'TRX-0001');
+  t('different date → not a duplicate', findReceiptDuplicate_(rows, Object.assign({}, d1, { date: now.getTime() })), null);
+  t('Drive id from a link', [driveIdFromUrl_('https://drive.google.com/file/d/1AbCdEfGhIjKlMnOp/view'), driveIdFromUrl_('x')],
+    ['1AbCdEfGhIjKlMnOp', '']);
+  // Google OCR text read by rules (the owner's split screen, in both layouts the OCR can return)
+  const shares = [['Me', 80300], ['GMS Krista', 8800], ['natan', 61600], ['kia', 71500], ['sarrel', 22000],
+    ['kelun', 67100], ['rani', 33000], ['resting', 40700], ['valen', 15400]];
+  const rp = formatRp_;
+  const rowsText = ['19:42', 'Split bill', 'BANG ALI SIMP', '29 Oct 2026, 19:30', 'Total amount Rp400.400', '9 members']
+    .concat(shares.map(function (s) { return s[0].charAt(0).toUpperCase() + '\n' + s[0] + ' ' + rp(s[1]); })).join('\n');
+  const s1 = normalizeOcr_(parseOcrText_(rowsText));
+  t('rules: split screen, one row per line', [s1.merchant, s1.date, s1.total, s1.participants.length, s1.participants[1].name,
+    s1.participants[1].amount, ocrRoute_(s1, '')], ['BANG ALI SIMP', '2026-10-29', 400400, 9, 'GMS Krista', 8800, 'split']);
+  const colText = ['Split bill', 'BANG ALI SIMP', '29 Oct 2026', 'Total amount', 'Rp400.400', '9 members', 'M']
+    .concat(shares.map(function (s) { return s[0]; })).concat(shares.map(function (s) { return rp(s[1]); })).join('\n');
+  const s2 = normalizeOcr_(parseOcrText_(colText));
+  t('rules: split screen, names and amounts in two columns', [s2.total, s2.participants.length, s2.participants[0].name,
+    s2.participants[8].name, s2.participants[8].amount, s2.participants[0].confidence], [400400, 9, 'Me', 'valen', 15400, 1]);
+  const r1 = normalizeOcr_(parseOcrText_(['INDOMARET', 'JL. KEMANG RAYA 12', '24/09/2026 18:02', 'BERAS 5KG 1 70.000',
+    'MINYAK 2L 1 35.500', 'SUB TOTAL 105.500', 'PPN 11.605', 'TOTAL 117.105', 'TUNAI 150.000', 'KEMBALI 32.895'].join('\n')));
+  t('rules: receipt → TOTAL, not subtotal / cash / change', [r1.merchant, r1.date, r1.total, r1.subtotal, r1.participants.length,
+    ocrRoute_(r1, '')], ['INDOMARET', '2026-09-24', 117105, 105500, 0, 'receipt']);
+  const r2 = normalizeOcr_(parseOcrText_('Kopi Kenangan\nTotal Item 2\nGrand Total\nRp 56,000.00\nTotal 50.000\nGoPay'));
+  t('rules: Grand Total beats Total, label and amount on two lines, issuer', [r2.total, r2.issuer], [56000, 'GoPay']);
+  t('rules: nothing found → AI / ask for the amount', ocrRulesOk_(normalizeOcr_(parseOcrText_('Terima kasih\nSelamat datang'))), false);
+  t('amounts', ['Rp80.300', '85,500', '1.500,00', '85500', 'Rp 9.800.000', 'abc'].map(ocrAmount_), [80300, 85500, 1500, 85500, 9800000, null]);
+  // Owner's real read: the avatar initials "MGNKS KRR +1" came through, "Me" did not → the first row is Me (GoPay's fixed layout)
+  const others = shares.slice(1);
+  const s3 = normalizeOcr_(parseOcrText_(['BANG ALI SIMP', '29 Oct 2026', 'Total amount', 'Rp400.400', '9 members', 'MGNKS KRR +1']
+    .concat(others.map(function (s) { return s[0]; })).concat(shares.map(function (s) { return rp(s[1]); })).join('\n')));
+  t('rules: avatar initials skipped, missing "Me" is the first row', [s3.participants.length, s3.participants[0].name,
+    s3.participants[0].amount, s3.participants[1].name, findMeIndexes_(s3.participants, '')], [9, 'Me', 80300, 'GMS Krista', [0]]);
+  const s4 = normalizeOcr_(parseOcrText_(['BANG ALI SIMP', '29 Oct 2026', 'Total amount Rp400.400', '9 members', 'MGNKS KRR +1 Rp80.300']
+    .concat(others.map(function (s) { return s[0] + ' ' + rp(s[1]); })).join('\n')));
+  t('rules: avatar initials on the first row (one line per row) → Me', [s4.participants.length, s4.participants[0].name], [9, 'Me']);
+  console.log((pass === 34 ? 'PASS' : 'FAIL') + ': testOcr ' + pass + '/34');
 }

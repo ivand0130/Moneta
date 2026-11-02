@@ -117,9 +117,18 @@ function chunk_(buttons, perRow) {
   return rows;
 }
 
-/** Downloads a file (photo) sent to the bot. OCR phase. */
-function getFile(fileId) {
-  throw new Error('getFile is not implemented yet (OCR phase).');
+/** Downloads a file (photo) sent to the bot as a Blob. Telegram allows up to 20 MB. */
+function downloadTelegramFile_(fileId) {
+  const file = tgCall_('getFile', { file_id: fileId });
+  const token = requireProp_(PROP.BOT_TOKEN);
+  let response;
+  try {
+    response = UrlFetchApp.fetch('https://api.telegram.org/file/bot' + token + '/' + file.file_path, { muteHttpExceptions: true });
+  } catch (err) {
+    throw new Error('Telegram file download: network error'); // the raw error would contain the token
+  }
+  if (response.getResponseCode() !== 200) throw new Error('Telegram file download failed (HTTP ' + response.getResponseCode() + ')');
+  return response.getBlob();
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +222,12 @@ function scheduleDelete_(chatId, messageId, seconds) {
  * time before deleting it, so a 60s delete happens at ~60s, not up to 2 min.
  */
 function cleanupMessages() {
+  // Bill photos waiting to be read (OCR.gs) — exits at once when there are none.
+  try {
+    processOcrQueue_();
+  } catch (err) {
+    logError_('processOcrQueue_', err);
+  }
   if (CacheService.getScriptCache().get(DELETE_QUEUE_CACHE_KEY) === '[]') return;
 
   let due = [];

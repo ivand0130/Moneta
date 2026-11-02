@@ -3,12 +3,11 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 6 — BUILT and pushed (2026-11-01), waiting for the owner's Telegram
-checklist. Owner setup: new deployment version, upgradeSheets (adds
-Investment_Sales → Link ID).
-Phase 5 — DONE (committed 78d4907; owner re-test of the fixes pending).
-Phase 4, 3, 2B, 2, 1, 0 — DONE.
-Next: Phase 7 — Bill OCR (GoPay Split Bill + receipts).
+Phase 7 — BUILT and pushed (2026-11-02), waiting for the owner's Telegram checklist. Owner setup:
+upgradeSheets (Wallets → Receipt Issuer, Input Source dropdown), Receipt Issuer = GoPay on the GoPay
+wallet, share the Receipts folder with the partner, new deployment version.
+Phase 6, 5, 4, 3, 2B, 2, 1, 0 — DONE.
+Next: Phase 8 — Closing, reports, sheet management.
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)
@@ -51,7 +50,7 @@ Still to change in code that is already built:
   schema + upgradeMissingTabs_ (added to existing sheets by upgradeSheets),
   testBudgetCommand
 - From now on every new saving flow must call afterSave_
-- Phase 7: LISTS.INPUT_SOURCES (Config.gs) and the sheet dropdown change to
+- (done in Phase 7) LISTS.INPUT_SOURCES (Config.gs) and the sheet dropdown change to
   Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet; parser needs a caption
   mode with an optional amount; routeUpdate_ must accept image documents;
   receipts need their own duplicate rule (findDuplicate_ is text-only)
@@ -487,6 +486,128 @@ Still to change in code that is already built:
   - Tests: testInvParser 29, testInvReport 10; Node fake end-to-end run of
     buy / ask / sell FIFO + chosen row / bulk update / sheet edit / undo /
     guided sell / last-day reminder
+
+- Phase 7 (bill photos: receipts + GoPay Split Bill)
+  - Owner decisions: "which one is you?" asked when the GoPay name doesn't
+    match, then saved to Users → GoPay Name (several matches → asked each time);
+    an app receipt picks the wallet whose new Wallets column Receipt Issuer
+    matches the issuer (several → buttons, none → normal rules, caption wins);
+    low confidence = below 80%; the Receipts folder is shared with the partner
+    by hand
+  - Main.routeUpdate_: photos (largest size) and image documents → handlePhoto_
+    (OCR.gs): "🔍 Reading the bill…" → ONE Gemini call (callGeminiJson_ now
+    takes an inline image) with OCR_PROMPT → normalizeOcr_ → ocrRoute_ (issuer
+    GoPay AND participants → split; caption split / bill forces). AI off,
+    download or AI failure, unreadable → a message; the user types instead
+  - Receipt: buildReceiptDraft_ (pure) → the normal trx flow. Final total;
+    several totals (Gemini's other_totals, or subtotal + tax + service +
+    delivery − discount ≠ total) → "Which one did you pay?"; date = receipt
+    date (today if none); note = merchant · caption note; category keyword on
+    merchant + items; caption parsed with the amount optional (parseCaption_);
+    preview header "🧾 Read from receipt…" + low-confidence warnings; duplicate
+    = same total + merchant + receipt date at any time (findReceiptDuplicate_);
+    Input Source OCR-Receipt. No total → asks the amount
+  - Split bill (pending kind 'ocr', advanceOcrSplit_): which one is me → who
+    paid → shares vs total ([Total = shares] / [difference to my share]) →
+    unknown names ([New contact] or pick a contact; the GoPay name becomes an
+    alias, addContactAlias_) → duplicate (same merchant + date, OCR-GoPay).
+    I paid → the Phase 4 split flow (debt draft kind 'split'). Someone else
+    paid → [Not paid back yet] Hutang record + Hutang row (in) + my Expense
+    (out) through one wallet, net 0 (saveOcrHutang_) / [Already paid] a plain
+    Expense. Not in the bill and didn't pay → nothing to log
+  - Image: kept as Telegram file_id until Yes; then attachReceiptText_
+    downloads it again, saves Receipts/yyyy-MM/[TrxID]_[date]_[merchant].ext
+    (receiptsMonthFolder_: RECEIPTS_FOLDER_ID, else MonetaBot/Receipts is
+    made), links "View receipt" (rich-text link, no locale trouble) on every
+    row of the group, and the success message shows the link. Failure: entry
+    kept, logged, message says so
+  - /undo of a row with an image → after deleting asks "Also delete the
+    receipt image?" (Drive trash). /setreceipts <folder link>
+  - Upgrade: Wallets → Receipt Issuer column; Input Source dropdown =
+    Text / OCR-GoPay / OCR-Receipt / Favorite / Sheet (upgradeInputSources_)
+  - Owner's first test: photos stayed on "🔍 Reading the bill…". No log access
+    from here, so: handlePhoto_ now catches everything after that message and
+    edits it with the reason; each step (received, downloaded KB, AI
+    answered / failed, route) is written to RECENT_UPDATES with seconds
+    (showRecentUpdates); photos use 2 Gemini tries (not 3) and
+    thinkingConfig.thinkingBudget = 0 (much faster on Flash; a 400 about
+    thinking retries once without it); merchant escaped in the preview header
+  - showRecentUpdates then showed: downloaded 33 KB (1s), then nothing; Telegram
+    re-sent the update 60s later. The run never came back from the Gemini call
+    inside the webhook. Fix: photos are QUEUED (OCR_QUEUE) and read by the
+    1-minute cleanup trigger (processOcrQueue_ first in cleanupMessages; exits
+    at once when empty; ≤4 min of work per run). Jobs being read sit in
+    OCR_RUNNING; one left after 7 min gets "took too long" on its message.
+    Without the cleanup trigger, photos are read right away (old way). Still
+    two triggers
+  - Next trail: Gemini answered after 276s for a 33 KB photo; the category tap
+    arrived 12 min later → the pending (10 min) had expired and only a small
+    pop-up said so. Now: Settings → Gemini Vision Model (default
+    gemini-flash-lite-latest; empty = Gemini Model; a 404 / unknown-model 400
+    falls back to Gemini Model) for photos; every photo Gemini try is in the
+    trail (model, HTTP code, seconds); an expired button edits its message to
+    "⌛ This expired (a preview waits 10 minutes), so nothing was saved"
+  - Owner's split screenshot: GoPay's split screen has no "GoPay" text and lists
+    the sender as "Me"; flash-lite answered HTTP 400 instantly. Now: any 4xx
+    (not 429) from the photo model → the main model, error text in the trail;
+    split = participants AND (GoPay issuer OR is_split_bill with 2+ people);
+    "Me / Saya / Aku / Anda / You / Kamu" = me (not saved as the GoPay name);
+    several unknown names → [Add all as new contacts] / [Match one by one]
+  - Next trail: flash-lite 400 "invalid argument", flash-latest 503 "high demand"
+    twice → no answer. Gemini's free tier is too unreliable for photos, so the
+    reading changed (2026-11-02): Google Drive's OCR turns the photo into text
+    (driveOcrText_: Drive v3 upload as a Google Doc, ocrLanguage=id, export
+    text/plain, temporary Doc deleted; existing drive scope, no new
+    authorization) → fixed rules read it (parseOcrText_: total labels ranked
+    Grand Total / Total Bayar / Total amount… > Total > Jumlah, never Subtotal /
+    Kembali / Tunai / PPN / Total Item; label and amount on one line or two;
+    dates "29 Oct 2026", "24/09/2026", "2026-09-24"; split list "Name Rp…" per
+    line or names and amounts in two columns, avatar initials skipped, "N
+    members" checked; issuer GoPay / Grab / OVO / DANA / ShopeePay…). This runs
+    inside the webhook (a few seconds, no waiting a minute) and needs no AI.
+    Only when the rules find neither a total nor a split list AND AI Enabled =
+    Yes, the job (with the text) goes to the cleanup trigger, where Gemini gets
+    the TEXT (OCR_TEXT_PROMPT), not the photo; if Google OCR itself failed, the
+    photo. Last resort: the receipt flow asks "Send the amount". AI Enabled =
+    No no longer blocks photos. Also: thinkingConfig removed (likely cause of
+    the flash-lite 400), and the trail regex /s+/ → /\s+/ (it ate the letter s)
+  - Owner's retest: the row of avatar initials "MGNKS KRR +1" was read as the
+    first name and "Me" was missing. GoPay's split screen always lists the
+    sender first, so (ocrFirstIsMe_, only on screens with "N members"):
+    avatar rows (capitals + "+N") are never names; no "me" word and one name
+    short → "Me" is the first row; first name only capitals → "Me"
+  - Owner (2026-11-02): someone else paid + not paid back = ONLY a hutang (no
+    expense, no wallet change); the expense counts when it is paid back.
+    saveOcrHutang_ now writes the Hutang record (Category = my share's
+    category, Wallet = where I'll pay back from) + one Hutang row with
+    Direction None (no Expense row). Debts "Converted" formula skips Type
+    Hutang (debtSumFormula_ extra criteria; upgradeSheets refreshes the
+    Hutang_Piutang formulas — owner must run it); /undo "reopen" skips Hutang
+    rows. Paying back a Hutang that has a category (sharePaidLater_): the usual
+    Settlement Out + an Expense row (Direction None, no Debt ID, same Link ID,
+    the record's category) → budget message; the payment preview says
+    "🧾 RpX counted as Expense · Food (split bill share)". Previews: hutang
+    preview labels "📂 Category:" and "👛 Wallet:" (the old "· BCA" at the
+    line end looked like the category); the I-paid split preview shows
+    "👛 Wallet:" and has [📂 Category] [👛 Wallet]
+  - Owner (2026-11-02): EVERY hutang payment (regular too) is money out, so it
+    counts as an Expense; the category is asked at payment time (a split-bill
+    hutang pre-fills its own category, e.g. Food; 📂 Category on the preview
+    changes it). Save: Settlement Out (wallet −, Paid formula) + Expense row
+    Direction None (budgets/reports; no second wallet change), same Link ID.
+    Replaces the earlier "only categorized hutang" rule (sharePaidLater_ gone).
+    Piutang payments are unchanged (not income)
+  - Owner: a payment name with no open record now lists the open records,
+    closest name first (sortByNameMatch_: a whole word of the name, then
+    containing, then fewest typos via editDistance_), e.g. "krista" /
+    "kriesta" → GMS Krista; tapping one pays that record
+  - Tests: testOcr 34 (rules on the owner's split screen in both layouts, an
+    Indomaret receipt, Grand Total vs Total); fake e2e: split with AI off, an
+    unreadable receipt asks the amount, AI backup gets the text only
+  - Earlier tests: testOcr 26; fake end-to-end run with fake Gemini, Telegram download
+    and Drive (receipts, duplicate, issuer wallet, several totals, unreadable,
+    split I paid / someone else paid, remembered GoPay name and alias, /undo +
+    trash)
 
 ## Known issues
 - (Resolved in Phase 4) Conversions are Expense/Income rows with Direction

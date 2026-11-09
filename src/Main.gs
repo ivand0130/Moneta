@@ -197,6 +197,27 @@ function handleText_(message) {
       case '/setreceipts':
         setReceiptsFolder_(chatId, args);
         return;
+      case '/closing':
+        startClosing_(chatId, args);
+        return;
+      case '/report':
+        startReport_(chatId, args);
+        return;
+      case '/setsheet':
+        setSheetCommand_(chatId, args);
+        return;
+      case '/setarchive':
+        setArchiveCommand_(chatId, args);
+        return;
+      case '/settemplate':
+        setTemplateCommand_(chatId, args);
+        return;
+      case '/links':
+        linksCommand_(chatId);
+        return;
+      case '/template':
+        templateCommand_(chatId);
+        return;
       case '/fav':
       case '/favorite':
       case '/favorites':
@@ -241,6 +262,12 @@ function handleText_(message) {
   }
   if (p && p.kind === 'debt' && p.awaitText) {
     handleDebtText_(p, message);
+    return;
+  }
+  // "tutup transaksi bulan September 2026" / "tutup buku Oktober" = /closing (not "tutup piutang …", a debt conversion)
+  const close = text.match(/^tutup\s+(?:transaksi|buku)(?:\s+bulan)?\s*(.*)$/i);
+  if (close) {
+    startClosing_(chatId, close[1]);
     return;
   }
   startTransaction_(message);
@@ -307,6 +334,9 @@ function buildHelpText_() {
     '/contact — contacts and aliases · <code>/contact add Budi, Budi Santoso</code>',
     '/wallet — list wallets · <code>/wallet add Jenius</code>',
     '/category or /cat — list categories · <code>/cat add Pets</code>',
+    '/report — this month so far · <code>/report oktober 2026</code> (closed months come from their archive; deleted after 60s)',
+    '/closing — close the oldest open month (password): archive, report, carry balances over · <code>tutup transaksi bulan Oktober 2026</code>',
+    '/links — the main sheet, archive and receipts folders in use · /setsheet, /setarchive, /settemplate (links) · /template',
     '/changepass — change the /saldo password (default 0000)',
     '/cancel — stop what you\'re doing',
     '/help — this guide'

@@ -136,16 +136,19 @@ function getSchema_() {
       { h: 'Paid', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Type', 'Settlement'); } },
       // A Hutang row with Direction None is a split share someone else paid (nothing moved yet), not a conversion.
       { h: 'Converted', fmt: FMT.RP, formula: function (r) { return debtSumFormula_(r, 'Direction', 'None', ',' + r(TAB.TRANSACTIONS, 'Type') + ',"<>Hutang"'); } },
+      // Paid + converted − added in months already closed (their Transactions rows are in the archive). Written by closing.
+      { h: 'Carried Paid', fmt: FMT.RP, w: 110 },
       { h: 'Remaining', fmt: FMT.RP, formula: function (r) {
         const D = T.DEBTS;
         return 'MAP(' + r(D, 'Debt ID') + ',' + r(D, 'Original') + ',' + r(D, 'Added') + ',' + r(D, 'Paid') + ',' +
-          r(D, 'Converted') + ',LAMBDA(id,o,a,p,c,IF(id="",,N(o)+N(a)-N(p)-N(c))))';
+          r(D, 'Converted') + ',' + r(D, 'Carried Paid') + ',LAMBDA(id,o,a,p,c,k,IF(id="",,N(o)+N(a)-N(p)-N(c)-N(k))))';
       } },
       { h: 'Status', w: 100, formula: function (r) {
         // Remaining ≤ 0 → Converted (if any part was converted) or Paid; otherwise Partial / Open.
         const D = T.DEBTS;
         return 'MAP(' + r(D, 'Debt ID') + ',' + r(D, 'Remaining') + ',' + r(D, 'Paid') + ',' + r(D, 'Converted') +
-          ',LAMBDA(id,m,p,c,IF(id="",,IF(N(m)<=0,IF(N(c)>0,"Converted","Paid"),IF(N(p)+N(c)>0,"Partial","Open")))))';
+          ',' + r(D, 'Carried Paid') +
+          ',LAMBDA(id,m,p,c,k,IF(id="",,IF(N(m)<=0,IF(N(c)>0,"Converted","Paid"),IF(N(p)+N(c)+N(k)>0,"Partial","Open")))))';
       } },
       { h: 'Converted Trx', w: 110 },
       { h: 'Last Reminder', fmt: FMT.DATE },
@@ -335,6 +338,20 @@ function getSchema_() {
       { h: 'Spent', fmt: FMT.RP },
       { h: 'Remaining', fmt: FMT.RP },
       { h: 'Status', list: LISTS.BUDGET_STATUSES, w: 80 }
+    ] },
+
+    // Written at monthly closing: each fully paid / converted hutang-piutang and fully sold purchase it moved out.
+    { name: T.CLOSED_HISTORY, columns: [
+      { h: 'Month Key', w: 90 },
+      { h: 'Month', fmt: FMT.TEXT, w: 90 },
+      { h: 'Kind', w: 90 },
+      { h: 'ID', w: 100 },
+      { h: 'Name', w: 220 },
+      { h: 'Amount', fmt: FMT.RP },
+      { h: 'Result', w: 90 },
+      { h: 'Gain/Loss', fmt: FMT.RP, redIfNegative: true },
+      { h: 'Closed At', fmt: FMT.DATETIME },
+      { h: 'Archive Link', w: 200 }
     ] },
 
     { name: T.LOGS, columns: [
@@ -1061,7 +1078,9 @@ function upgradeSheets() {
     console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.WALLETS));
     console.log(ss.getName() + ' → ' + fillInvestmentWallets_(ss));
     console.log(ss.getName() + ' → ' + upgradeWalletTypes_(ss));
+    console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.DEBTS)); // Carried Paid (Phase 8), before its formulas
     [TAB.INVESTMENTS, TAB.SALES, TAB.INV_SUMMARY, TAB.DEBTS].forEach(function (t) { console.log(ss.getName() + ' → ' + refreshFormulas_(ss, t)); });
+    console.log(ss.getName() + ' → ' + upgradeDashboardCashFlow_(ss));
     console.log(ss.getName() + ' → ' + addWalletGroupOption_(ss, 'Investment Wallet'));
     console.log(ss.getName() + ' → ' + upgradeInputSources_(ss));
     console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
@@ -1216,6 +1235,43 @@ function fillMainSheetUsers_(ss) {
  * Dashboard: live summary tables (columns T onward, all formulas) and the
  * 7 charts from SPEC Section 18 on the left.
  */
+/**
+ * Cash flow of the last 12 months (Dashboard T3:W14). A closed month's rows are gone from Transactions
+ * (they are in its archive), so its Income / Expense come from the Monthly Report tab.
+ */
+function dashboardCashFormulas_(r) {
+  const X = TAB.TRANSACTIONS, R = TAB.REPORT;
+  const out = [];
+  for (let i = 0; i < 12; i++) {
+    const row = 3 + i;
+    const key = 'YEAR(T' + row + ')*100+MONTH(T' + row + ')';
+    const sum = function (t) {
+      return '=IF(COUNTIFS(' + r(R, 'Month Key') + ',' + key + ',' + r(R, 'Status') + ',"Closed")>0,SUMIFS(' +
+        r(R, t) + ',' + r(R, 'Month Key') + ',' + key + '),SUMIFS(' + r(X, 'Amount') + ',' + r(X, 'Type') + ',"' + t + '",' +
+        r(X, 'Date') + ',">="&T' + row + ',' + r(X, 'Date') + ',"<"&EDATE(T' + row + ',1)))';
+    };
+    out.push(['=EDATE((EOMONTH(TODAY(),-1)+1),' + (i - 11) + ')', sum('Income'), sum('Expense'), '=U' + row + '-V' + row]);
+  }
+  return out;
+}
+
+/** Phase 8: the Dashboard cash flow reads closed months from the Monthly Report tab. */
+function upgradeDashboardCashFlow_(ss) {
+  const sheet = ss.getSheetByName(TAB.DASHBOARD);
+  if (sheet === null) return 'Dashboard: tab not found';
+  const locale = ss.getSpreadsheetLocale();
+  ss.setSpreadsheetLocale('en_US');
+  try {
+    const want = dashboardCashFormulas_(makeSheetResolver_(ss));
+    if (sheet.getRange('U3').getFormula() === want[0][1]) return 'Dashboard: cash flow up to date';
+    sheet.getRange('T3:W14').setFormulas(want); // the Dashboard protection is warning-only, so the script can write
+    SpreadsheetApp.flush();
+    return 'Dashboard: cash flow now reads closed months from Monthly Report';
+  } finally {
+    ss.setSpreadsheetLocale(locale);
+  }
+}
+
 function buildDashboard_(ss, sheet, r) {
   const X = TAB.TRANSACTIONS, W = TAB.WALLETS, C = TAB.CATEGORIES, I = TAB.INVESTMENTS, R = TAB.REPORT;
   const amt = r(X, 'Amount'), type = r(X, 'Type'), date = r(X, 'Date'), cat = r(X, 'Category');
@@ -1227,16 +1283,7 @@ function buildDashboard_(ss, sheet, r) {
 
   // Cash flow, last 12 months (T:W)
   sheet.getRange('T2:W2').setValues([['Month', 'Income', 'Expense', 'Net']]);
-  const cash = [];
-  for (let i = 0; i < 12; i++) {
-    const row = 3 + i;
-    const sum = function (t) {
-      return '=SUMIFS(' + amt + ',' + type + ',"' + t + '",' + date + ',">="&T' + row + ',' + date +
-        ',"<"&EDATE(T' + row + ',1))';
-    };
-    cash.push(['=EDATE(' + monthStart + ',' + (i - 11) + ')', sum('Income'), sum('Expense'), '=U' + row + '-V' + row]);
-  }
-  sheet.getRange('T3:W14').setFormulas(cash);
+  sheet.getRange('T3:W14').setFormulas(dashboardCashFormulas_(r));
   sheet.getRange('T3:T14').setNumberFormat(FMT.MONTH);
   sheet.getRange('U3:W14').setNumberFormat(FMT.RP);
 
@@ -1333,4 +1380,141 @@ function validateSheet(spreadsheetId) {
     console.log('Missing columns in ' + t + ': ' + result.missingColumns[t].join(', '));
   });
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Sheet management from Telegram (SPEC Section 12): /setsheet, /setarchive,
+// /settemplate, /template. The IDs live in Script Properties.
+// ---------------------------------------------------------------------------
+
+/** A spreadsheet or Drive file ID from a link (…/d/ID/…) or the bare ID. */
+function sheetIdFromText_(text) {
+  const t = String(text || '').trim();
+  return (t.match(/\/d\/([\w-]{20,})/) || [])[1] || (/^[\w-]{25,}$/.test(t) ? t : '');
+}
+
+/** /setsheet <url>: always asks the password first. */
+function setSheetCommand_(chatId, args) {
+  const id = sheetIdFromText_(args);
+  if (!id) {
+    const ss = openMainSheet_();
+    return sendMessage(chatId, 'Send the sheet link: <code>/setsheet https://docs.google.com/spreadsheets/d/…</code>' +
+      (ss ? '\nNow using: <a href="' + escapeHtml_(ss.getUrl()) + '">' + escapeHtml_(ss.getName()) + '</a>' : ''));
+  }
+  askPassword_(chatId, 'setsheet', { sheetId: id }, '🔒 Enter the password to change the main sheet.');
+}
+
+/** After the password: check the sheet and show what was found. */
+function checkNewSheet_(chatId, sheetId, p) {
+  const result = validateSheet(sheetId);
+  if (result.error) {
+    const text = "⚠️ I can't open that sheet. Check the link, and that your Google account (the bot's owner) can edit it.";
+    return p ? finishStep_(p, text) : sendMessage(chatId, text);
+  }
+  const ss = SpreadsheetApp.openById(sheetId);
+  let userOk = false;
+  const settings = ss.getSheetByName(TAB.SETTINGS);
+  if (settings !== null) {
+    try {
+      userOk = readTableByHeaders_(settings, 'Chat ID').some(function (r) { return String(r['chat id']).trim() === String(chatId); });
+    } catch (err) { userOk = false; }
+  }
+  const L = ['📄 <b>' + escapeHtml_(result.name) + '</b>'];
+  if (result.ok) L.push('✅ All tabs and columns the bot needs are there.');
+  else {
+    if (result.missingTabs.length) L.push('Missing tabs: ' + escapeHtml_(result.missingTabs.join(', ')));
+    Object.keys(result.missingColumns).forEach(function (t) {
+      L.push('Missing in ' + escapeHtml_(t) + ': ' + escapeHtml_(result.missingColumns[t].join(', ')));
+    });
+  }
+  if (!userOk) L.push("⚠️ Your chat ID isn't in this sheet's Settings → Users table, so after switching the bot would stop " +
+    'answering you. Add both of you there first.');
+  if (!p) p = newPending_(chatId, 'sheet', { id: sheetId });
+  const rows = [];
+  if (!result.ok) rows.push([btn_(p, "🛠 Add what's missing", 'fix')]);
+  if (result.ok && userOk) rows.push([btn_(p, '✅ Switch to this sheet', 'sw')]);
+  rows.push(cancelRow_(p));
+  showStep_(p, L.join('\n'), rows);
+}
+
+function sheetCallback_(p, action) {
+  const id = p.d.id;
+  if (action === 'n') return finishStep_(p, '❌ Cancelled. The bot keeps using the same sheet.');
+  if (action === 'fix') {
+    headerCacheOff_ = true;
+    const ss = SpreadsheetApp.openById(id);
+    upgradeMissingTabs_(ss);
+    getSchema_().forEach(function (t) { if (t.columns.length && ss.getSheetByName(t.name) !== null) upgradeMissingColumns_(ss, t.name); });
+    return checkNewSheet_(p.chatId, id, p);
+  }
+  if (action !== 'sw' || !claimPending_(p)) return;
+  const ss = SpreadsheetApp.openById(id);
+  PropertiesService.getScriptProperties().setProperty(PROP.MAIN_SHEET_ID, id);
+  mainSheetCache_ = null;
+  clearConfigCache();
+  try { setSettingValue_(ss, 'Main Sheet ID', id); } catch (err) { /* info row only */ }
+  finishStep_(p, '✅ The bot now uses <a href="' + escapeHtml_(ss.getUrl()) + '">' + escapeHtml_(ss.getName()) + '</a> for both of you.');
+}
+
+/** /setarchive <folder url> */
+function setArchiveCommand_(chatId, args) {
+  const id = (String(args).match(/folders\/([\w-]{10,})/) || [])[1] || sheetIdFromText_(args);
+  if (!id) {
+    const cur = getProp_(PROP.ARCHIVE_FOLDER_ID);
+    return sendMessage(chatId, 'Send the folder link: <code>/setarchive https://drive.google.com/drive/folders/…</code>' +
+      (cur ? '\nNow using: https://drive.google.com/drive/folders/' + escapeHtml_(cur) : '\nNow: not set (a MonetaBot/Archive folder is made at the first closing).'));
+  }
+  try {
+    const folder = DriveApp.getFolderById(id);
+    PropertiesService.getScriptProperties().setProperty(PROP.ARCHIVE_FOLDER_ID, id);
+    try { setSettingValue_(openMainSheet_(), 'Archive Folder ID', id); } catch (err) { /* info row only */ }
+    sendMessage(chatId, '✅ Closing archives now go to <b>' + escapeHtml_(folder.getName()) + '</b>.');
+  } catch (err) {
+    sendMessage(chatId, "⚠️ I can't open that folder. Make sure the link is a Drive folder that your Google account (the bot's owner) can edit.");
+  }
+}
+
+/** /settemplate <url> */
+function setTemplateCommand_(chatId, args) {
+  const id = sheetIdFromText_(args);
+  if (!id) return sendMessage(chatId, 'Send the template sheet link: <code>/settemplate https://docs.google.com/spreadsheets/d/…</code>');
+  const result = validateSheet(id);
+  if (result.error) return sendMessage(chatId, "⚠️ I can't open that sheet. Check the link and that the bot's owner can open it.");
+  PropertiesService.getScriptProperties().setProperty(PROP.TEMPLATE_ID, id);
+  sendMessage(chatId, '✅ Template set to <b>' + escapeHtml_(result.name) + '</b>.' +
+    (result.ok ? '' : '\n⚠️ It is missing some tabs or columns (' + escapeHtml_(result.missingTabs.concat(Object.keys(result.missingColumns)).join(', ')) +
+      '). Copies of it will need upgradeSheets / "Add what\'s missing" in /setsheet.'));
+}
+
+/** /template: the link of the template sheet in use. */
+function templateCommand_(chatId) {
+  const id = getProp_(PROP.TEMPLATE_ID);
+  if (!id) return sendMessage(chatId, 'No template is set. Set one with <code>/settemplate &lt;sheet link&gt;</code>.');
+  try {
+    const file = DriveApp.getFileById(id);
+    sendMessage(chatId, '📄 Template: <a href="' + escapeHtml_(file.getUrl()) + '">' + escapeHtml_(file.getName()) + '</a>');
+  } catch (err) {
+    sendMessage(chatId, "⚠️ I can't open the template sheet any more. Set it again with /settemplate.");
+  }
+}
+
+/** /links: the main sheet and the Drive folders the bot uses now (archive, receipts) and the template. */
+function linksCommand_(chatId) {
+  const line = function (label, getter, missing) {
+    try {
+      const x = getter();
+      return x ? '• ' + label + ': <a href="' + escapeHtml_(x.getUrl()) + '">' + escapeHtml_(x.getName()) + '</a>' : '• ' + label + ': ' + missing;
+    } catch (err) {
+      return '• ' + label + ": ⚠️ can't be opened (check the link with the matching /set command)";
+    }
+  };
+  const byProp = function (prop, kind) {
+    return function () { const id = getProp_(prop); return id ? (kind === 'folder' ? DriveApp.getFolderById(id) : DriveApp.getFileById(id)) : null; };
+  };
+  sendMessage(chatId, ['🔗 <b>Links in use</b>',
+    line('📄 Main sheet', openMainSheet_, 'not set'),
+    line('📁 Archive folder', byProp(PROP.ARCHIVE_FOLDER_ID, 'folder'), 'not set yet (made at the first /closing)'),
+    line('🧾 Receipts folder', byProp(PROP.RECEIPTS_FOLDER_ID, 'folder'), 'not set yet (made with the first bill photo)'),
+    line('📋 Template', byProp(PROP.TEMPLATE_ID, 'file'), 'not set'),
+    '', 'Change them with /setsheet, /setarchive, /setreceipts, /settemplate.'].join('\n'));
 }

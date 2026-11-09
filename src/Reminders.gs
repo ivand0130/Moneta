@@ -23,15 +23,17 @@
  */
 
 /**
- * The reminder slots. Later phases add the last-day slots here:
- *   Phase 8 — start closing (Closing Reminder Time, last day of the month)
+ * The reminder slots (last day of the month: prices at 12:00, closing at 18:00; the 1st: a month not closed yet).
  * A slot: { key, timeSetting, when(now) → bool (optional), run(now) }. (A function, not a
  * top-level const, because Config.gs may load after this file.)
  */
 function reminderSlots_() {
   return [
     { key: 'morning', timeSetting: SETTING.DAILY_REMINDER_TIME, run: runMorningReminders_ },
-    { key: 'price', timeSetting: SETTING.PRICE_REMINDER_TIME, when: isLastDayOfMonth_, run: runPriceReminder_ }
+    { key: 'price', timeSetting: SETTING.PRICE_REMINDER_TIME, when: isLastDayOfMonth_, run: runPriceReminder_ },
+    { key: 'closing', timeSetting: SETTING.CLOSING_REMINDER_TIME, when: isLastDayOfMonth_, run: runClosingReminder_ },
+    { key: 'closingDue', timeSetting: SETTING.DAILY_REMINDER_TIME, when: function (now) { return now.getDate() === 1; },
+      run: runClosingOverdueReminder_ }
   ];
 }
 

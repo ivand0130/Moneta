@@ -23,7 +23,8 @@ const PROP = {
   REMINDER_STATE: 'REMINDER_STATE',     // Last day each reminder slot ran (runReminders)
   FAV_PROMPTS: 'FAV_PROMPTS',           // Latest favorite prompt message per favorite + chat
   OCR_QUEUE: 'OCR_QUEUE',               // Bill photos waiting to be read by the cleanup trigger
-  OCR_RUNNING: 'OCR_RUNNING'            // Bill photos being read (a stuck one gets an error after 7 min)
+  OCR_RUNNING: 'OCR_RUNNING',           // Bill photos being read (a stuck one gets an error after 7 min)
+  CLOSING_JOB: 'CLOSING_JOB'            // A monthly closing waiting for / being run by the cleanup trigger (Closing.gs)
 };
 
 /** Tab names in the main sheet. */
@@ -42,7 +43,8 @@ const TAB = {
   REPORT: 'Monthly Report',
   SETTINGS: 'Settings',
   LOGS: 'Logs',
-  BUDGET_HISTORY: 'Budget_History'
+  BUDGET_HISTORY: 'Budget_History',
+  CLOSED_HISTORY: 'Closed_History'    // debts / investments that closing moved out of the main sheet (Phase 8)
 };
 
 /**
@@ -97,7 +99,8 @@ const SETTING = {
   WEEKLY_REMINDER_DAY: 'Weekly Reminder Day',
   MONTHLY_REMINDER_DATE: 'Monthly Reminder Date',
   DEBT_DAYS_BEFORE_DUE: 'Debt Reminder Days Before Due',
-  PRICE_REMINDER_TIME: 'Price Update Reminder Time'
+  PRICE_REMINDER_TIME: 'Price Update Reminder Time',
+  CLOSING_REMINDER_TIME: 'Closing Reminder Time'
 };
 
 /**
@@ -112,7 +115,7 @@ const SETTING_ROWS = [
   [SETTING.GEMINI_VISION_MODEL, 'gemini-flash-lite-latest', 'Model for bill photos (a light model is much faster). Empty = same as Gemini Model. If it fails, the bot uses Gemini Model.'],
   [SETTING.LARGE_AMOUNT, '5000000', 'Amounts above this (Rp) get a warning in the preview.'],
   [SETTING.DUPLICATE_MINUTES, '5', 'Warn if the same type + amount + note was logged within this many minutes.'],
-  [SETTING.HIDE_AMOUNTS, 'Yes', 'Yes = amounts in /saldo, /inv, /open, /report are hidden until tapped.'],
+  [SETTING.HIDE_AMOUNTS, 'Yes', 'Yes = amounts in /saldo, /inv, /open, /report, /budget are hidden until tapped.'],
   [SETTING.PASSWORD, '0000', 'Password for /saldo. Numbers only. Change it here or with /changepass. 0000 = default (the bot reminds you to change it).'],
   [SETTING.SALDO_PASSWORD, 'Yes', 'Yes = /saldo asks for the password. No = /saldo shows balances right away (still hidden until tapped, and deleted after 60s).'],
   [SETTING.BUDGET_AUTO_DELETE, 'Yes', 'Yes = the budget message after each save is deleted at the end of the day (23:59), and the /budget reply after 60s. No = both stay.'],
@@ -129,10 +132,10 @@ const SETTING_ROWS = [
   [SETTING.WEEKLY_REMINDER_DAY, 'Monday', 'Day for the weekly summary reminder.'],
   [SETTING.MONTHLY_REMINDER_DATE, '1', 'Day of month for the monthly reminder.'],
   [SETTING.PRICE_REMINDER_TIME, '12:00', 'Last day of the month: reminder to update investment prices.'],
-  ['Closing Reminder Time', '18:00', 'Last day of the month: reminder to close the month.'],
+  [SETTING.CLOSING_REMINDER_TIME, '18:00', 'Last day of the month: reminder to close the month.'],
   [SETTING.DEBT_DAYS_BEFORE_DUE, '3', 'Start reminding this many days before a due date.'],
   ['Main Sheet ID', '', 'Info only (written by the script). The real value is in Script Properties.'],
-  ['Archive Folder ID', '', 'Info only. Set with /setarchive (later phase).']
+  ['Archive Folder ID', '', 'Info only. Set with /setarchive (closing archives go there; a MonetaBot/Archive folder is made on the first closing).']
 ];
 
 /** The /saldo reply is deleted this many seconds after it's sent (fixed by the owner's choice). */
@@ -149,6 +152,10 @@ const OPEN_DELETE_SECONDS = 60;
 
 /** The /inv reply is deleted this many seconds after it's sent (when Inv auto-delete = Yes). */
 const INV_DELETE_SECONDS = 60;
+
+/** /report replies are deleted after 60s; the report sent after closing (net worth details) after 5 minutes. */
+const REPORT_DELETE_SECONDS = 60;
+const NET_WORTH_DELETE_SECONDS = 300;
 
 /** Settings rows from earlier versions that are no longer used; upgradeSettings() removes them. */
 // 'Debt Reminder After Days': short-term records without a due date are only in the weekly list (owner, Phase 5).

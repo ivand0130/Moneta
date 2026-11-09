@@ -651,7 +651,7 @@ function loadSales_(ss) {
   return readTableByHeaders_(sheet, 'Inv ID').map(function (r) {
     return { saleId: String(r['sale id'] || '').trim(), invId: String(r['inv id']).trim(), date: dateOrNull_(r['sale date']),
       qty: Number(r['quantity sold']) || 0, price: Number(r['sale price']) || 0, fee: Number(r['fees']) || 0,
-      link: String(r['link id'] || '').trim() };
+      link: String(r['link id'] || '').trim(), row: r._row };
   });
 }
 

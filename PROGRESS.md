@@ -3,11 +3,9 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 7 — BUILT and pushed (2026-11-02), waiting for the owner's Telegram checklist. Owner setup:
-upgradeSheets (Wallets → Receipt Issuer, Input Source dropdown), Receipt Issuer = GoPay on the GoPay
-wallet, share the Receipts folder with the partner, new deployment version.
-Phase 6, 5, 4, 3, 2B, 2, 1, 0 — DONE.
-Next: Phase 8 — Closing, reports, sheet management.
+Phase 9 — Final review (next).
+Phase 8, 7, 6, 5, 4, 3, 2B, 2, 1, 0 — DONE (Phase 8 approved by the owner 2026-11-09).
+Next: Phase 9 — Final review.
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)
@@ -608,6 +606,66 @@ Still to change in code that is already built:
     and Drive (receipts, duplicate, issuer wallet, several totals, unreadable,
     split I paid / someone else paid, remembered GoPay name and alias, /undo +
     trash)
+- Phase 8 (closing, reports, sheet management) — DONE 2026-11-09 (built 2026-11-03)
+  - Owner's decisions: months close oldest first, from their last day on;
+    /closing asks the password; fully paid / converted hutang-piutang and fully
+    sold purchases leave the main sheet → new tab Closed_History (Month Key,
+    Month, Kind, ID, Name, Amount, Result, Gain/Loss, Closed At, Archive Link);
+    old prices only warn; prices option b: each held purchase keeps its latest
+    Price_History row (Current Price stays on Investment_Details anyway)
+  - /closing [month] (or "tutup transaksi/buku [bulan] X"): checks (sheet
+    upgraded, oldest first, month over, no undated rows) → summary (plain
+    amounts, it is a preview) with [🔒 Close] (+ [📈 Update prices first]) →
+    password → job in CLOSING_JOB, run by the 1-minute cleanup trigger
+    (processClosingJob_, exits at once when none; stale after 10 min). Without
+    the trigger it runs right away
+  - runClosingJob_ (Closing.gs): ONE lock for plan + archive copy + check +
+    main writes. Archive = Drive makeCopy of the whole spreadsheet into
+    ARCHIVE_FOLDER_ID (else MonetaBot/Archive, created), checked by
+    Transactions count + total; a failed check trashes the copy and changes
+    nothing. Main writes: Opening Balance = month-end balance (cash wallets),
+    Hutang_Piutang rewritten without finished records and with Carried Paid
+    (paid + converted − added of the archived rows; Remaining/Status formulas
+    subtract it), Investment_Details / Investment_Sales / Price_History /
+    Transactions rewritten without the closed rows (rewriteTableRows_: one
+    read, block writes of typed columns only; Image Link rich text kept), then
+    Monthly Report row (Closed, link), Budget_History, Closed_History, and a
+    row-count check. After that the archive is trimmed to the month (later
+    rows out, later sales give their quantity back), gets a Report tab (first
+    tab) and its own Monthly Report row; the report goes to every active user
+  - closingPlan_ / archiveTrimPlan_ / closingBlocker_ are pure (testClosing)
+  - /report [month]: open month = live from the main sheet ("so far"); closed
+    month = from its archive sheet + Budget_History + Closed_History of the
+    main sheet (fallback: the saved Monthly Report row). buildReportData_
+    (pure, testReport): income/expense (countsAsIncome_ / countsAsExpense_),
+    vs previous month, adjustments, categories with %, top 5, budgets, wallets
+    and groups start → end (walletEffect_ = the balance formula in JS),
+    transfers between groups, piutang/hutang (new, paid, converted, remaining,
+    overdue), investments (bought, sold, value, unrealized, realized this
+    month, change vs last month), net worth, favorites paid/skipped/not
+    logged, by person, moved items. Amounts through money_ (spoilers)
+  - Reminder slot "closing" (Closing Reminder Time, last day; skipped when the
+    month is already closed). Dashboard cash flow reads closed months from
+    Monthly Report (dashboardCashFormulas_, upgradeDashboardCashFlow_)
+  - /setsheet (password → validateSheet, warns when your chat ID is not in the
+    new sheet's Users, [Add what's missing] runs the tab/column upgrades,
+    [Switch]), /setarchive, /settemplate, /template ([Make a copy] link or a
+    copy in the owner's Drive)
+  - Closed-month block message also points to /adjust
+  - Owner's changes (2026-11-09): /links (main sheet, archive and receipts
+    folders, template); /report replies deleted after 60s (sendTimed_,
+    REPORT_DELETE_SECONDS) and the report after closing (net worth details)
+    after 5 min (NET_WORTH_DELETE_SECONDS); closing summary = titled sections
+    with bullets (Summary, Wallets at month end + Total, Budget realization
+    vs plan, Moving out, Carried over, Favorites not logged, No price this
+    month); success message adds the archive folder link; archives go to
+    Archive/<year>/ named "September 2025 MonetaBot"; reminder on the 1st
+    (Daily Reminder Time) when an ended month isn't closed (slot
+    closingDue); /template only sends the template link (copy feature removed)
+  - Tests: testClosing 15, testReport 12; fake e2e: full closing (archive,
+    openings, carry, Closed_History, links kept, report to both users), entry
+    in October blocked, /report of the closed month from the archive, failed
+    archive check changes nothing (copy trashed), /setsheet, /setarchive
 
 ## Known issues
 - (Resolved in Phase 4) Conversions are Expense/Income rows with Direction

@@ -64,6 +64,26 @@ function countsAsExpense_(row) {
   return String(row['type']).trim() === 'Expense';
 }
 
+/** The same rule for income: Type = Income (debt conversions of a hutang included; Adjustments never). */
+function countsAsIncome_(row) {
+  return String(row['type']).trim() === 'Income';
+}
+
+/**
+ * How a Transactions row changes one wallet's balance (the Wallets "Current
+ * Balance" formula in JS): In +, Out −, Transfer − from Wallet and + to To
+ * Wallet, None 0.
+ */
+function walletEffect_(row, wallet) {
+  const amt = Number(row['amount']) || 0;
+  const dir = String(row['direction'] || '').trim();
+  const from = String(row['wallet'] || '').trim() === wallet;
+  if (dir === 'In') return from ? amt : 0;
+  if (dir === 'Out') return from ? -amt : 0;
+  if (dir === 'Transfer') return (from ? -amt : 0) + (String(row['to wallet'] || '').trim() === wallet ? amt : 0);
+  return 0;
+}
+
 /** All Transactions rows (objects with lowercase keys and _row). */
 function loadTransactions_(ss) {
   return readTableByHeaders_(ss.getSheetByName(TAB.TRANSACTIONS), 'Amount');

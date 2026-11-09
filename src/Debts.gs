@@ -25,7 +25,7 @@ function loadDebts_(ss) {
       name: String(r['name'] || '').trim(), start: r['start date'] instanceof Date ? r['start date'] : null,
       due: r['due date'] instanceof Date ? r['due date'] : null, wallet: String(r['wallet'] || '').trim(),
       category: String(r['category'] || '').trim(), original: n('original'), added: n('added'), paid: n('paid'),
-      converted: n('converted'), remaining: n('remaining'), status: String(r['status'] || '').trim(),
+      converted: n('converted'), carried: n('carried paid'), remaining: n('remaining'), status: String(r['status'] || '').trim(),
       convertedTrx: String(r['converted trx'] || '').trim(),
       snoozed: r['snoozed until'] instanceof Date ? r['snoozed until'] : null, row: r._row
     };

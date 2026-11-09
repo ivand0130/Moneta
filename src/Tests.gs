@@ -1138,3 +1138,136 @@ function testOcr() {
   t('rules: avatar initials on the first row (one line per row) → Me', [s4.participants.length, s4.participants[0].name], [9, 'Me']);
   console.log((pass === 34 ? 'PASS' : 'FAIL') + ': testOcr ' + pass + '/34');
 }
+
+// ---------------------------------------------------------------------------
+// Phase 8: closing and reports
+// ---------------------------------------------------------------------------
+
+/** A made-up October 2026 with each kind of entry, shared by testClosing and testReport. */
+function testClosingSnap_() {
+  const D = function (m, d) { return new Date(2026, m, d, 12, 0); };
+  const row = function (n, id, date, type, amount, dir, wallet, extra) {
+    return Object.assign({ _row: n + 1, 'trx id': id, date: date, type: type, amount: amount, direction: dir, wallet: wallet,
+      'to wallet': '', category: '', 'debt id': '', 'link id': '', 'logged by': 'Daniel', note: '' }, extra || {});
+  };
+  const trx = [
+    row(1, 'TRX-0001', D(9, 3), 'Income', 5000000, 'In', 'BCA', { category: 'Salary', 'logged by': 'Partner' }),
+    row(2, 'TRX-0002', D(9, 5), 'Expense', 100000, 'Out', 'BCA', { category: 'Food', note: 'KFC' }),
+    row(3, 'TRX-0003', D(9, 6), 'Transfer', 200000, 'Transfer', 'BCA', { 'to wallet': 'GoPay' }),
+    row(4, 'TRX-0004', D(9, 7), 'Piutang', 300000, 'Out', 'BCA', { 'debt id': 'PTG-001' }),
+    row(5, 'TRX-0005', D(9, 20), 'Settlement', 300000, 'In', 'BCA', { 'debt id': 'PTG-001' }),
+    row(6, 'TRX-0006', D(9, 8), 'Piutang', 500000, 'Out', 'BCA', { 'debt id': 'PTG-002' }),
+    row(7, 'TRX-0007', D(9, 25), 'Settlement', 200000, 'In', 'BCA', { 'debt id': 'PTG-002' }),
+    row(8, 'TRX-0008', D(10, 1), 'Expense', 50000, 'Out', 'GoPay', { category: 'Food' }),
+    row(9, 'TRX-0009', D(9, 10), 'Investment Buy', 1000000, 'Transfer', 'BCA', { 'to wallet': 'IPOT', 'link id': 'LNK-0001' }),
+    row(10, 'TRX-0010', D(9, 28), 'Investment Sell', 1200000, 'Transfer', 'IPOT', { 'to wallet': 'BCA', 'link id': 'LNK-0002' }),
+    row(11, 'TRX-0011', D(9, 9), 'Hutang', 80300, 'None', 'GoPay', { 'debt id': 'HTG-001' }),
+    row(12, 'TRX-0012', D(9, 30), 'Adjustment', 10000, 'In', 'GoPay')
+  ];
+  const debt = function (n, id, type, original, status, remaining) {
+    return { row: n + 1, id: id, parent: '', type: type, name: id === 'HTG-001' ? 'natan' : 'Budi', original: original, added: 0,
+      carried: 0, remaining: remaining, status: status, due: null, start: D(9, 7) };
+  };
+  const inv = function (n, id, asset, unit, qty, price, link, date) {
+    return { row: n + 1, id: id, asset: asset, category: unit === 'lot' ? 'Saham' : 'Emas', invWallet: unit === 'lot' ? 'IPOT' : 'Emas',
+      unit: unit, qty: qty, price: price, cost: 0, current: null, date: date, lastUpdate: null, link: link, holding: qty > 0, status: '' };
+  };
+  return {
+    trx: trx,
+    walletRows: [
+      { _row: 2, wallet: 'BCA', 'wallet type': 'Cash', 'opening balance': 1000000 },
+      { _row: 3, wallet: 'GoPay', 'wallet type': 'Cash', 'opening balance': 0 },
+      { _row: 4, wallet: 'IPOT', 'wallet type': 'Saham', 'opening balance': 0 }
+    ],
+    wallets: [
+      { name: 'BCA', group: 'Spending', type: 'Cash', active: true }, { name: 'GoPay', group: 'Spending', type: 'Cash', active: true },
+      { name: 'IPOT', group: 'Investment', type: 'Investment', active: true }
+    ],
+    debts: [debt(1, 'PTG-001', 'Piutang', 300000, 'Paid', 0), debt(2, 'PTG-002', 'Piutang', 500000, 'Partial', 300000),
+      debt(3, 'HTG-001', 'Hutang', 80300, 'Open', 80300)],
+    investments: [inv(1, 'INV-0001', 'BBCA', 'lot', 0, 5000, 'LNK-0001', D(9, 10)), inv(2, 'INV-0002', 'Antam', 'gram', 2, 1000000, 'LNK-0003', D(9, 15))],
+    sales: [{ row: 2, saleId: 'SAL-0001', invId: 'INV-0001', date: D(9, 28), qty: 2, price: 6000, fee: 0, link: 'LNK-0002' }],
+    prices: [
+      { _row: 2, date: D(9, 5), 'inv id': 'INV-0002', price: 990000 },
+      { _row: 3, date: D(9, 20), 'inv id': 'INV-0001', price: 5500 },
+      { _row: 4, date: D(9, 30), 'inv id': 'INV-0002', price: 1010000 }
+    ],
+    categories: [{ name: 'Food', type: 'Expense', budget: 1000000 }, { name: 'Salary', type: 'Income', budget: 0 }],
+    favorites: []
+  };
+}
+
+function testClosing() {
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  const snap = testClosingSnap_();
+  const plan = closingPlan_(snap, 2026, 9);
+  t('October rows leave, November stays', [plan.removedCount, plan.keepCount, plan.removeTrx.indexOf(9)], [11, 1, -1]);
+  t('opening balances = month-end balances (cash wallets only)', plan.openings.map(function (o) { return [o.name, o.value]; }),
+    [['BCA', 5600000], ['GoPay', 210000]]);
+  t('paid piutang → Closed_History; partial one carries what was paid; split hutang (Direction None) unchanged',
+    [plan.removeDebts, plan.debtChanges], [[2], { 3: { 'Carried Paid': 200000 } }]);
+  t('sold-out purchase leaves with its sale, gain kept', [plan.removeInv, plan.removeSales,
+    plan.closedItems.map(function (c) { return [c.kind, c.id, c.amount, c.result, c.gain]; })],
+    [[2], [2], [['Piutang', 'PTG-001', 300000, 'Paid', null], ['Investment', 'INV-0001', 1200000, 'Sold', 200000]]]);
+  t('prices: the latest of each held purchase stays, the rest leaves', plan.removePrices, [2, 3]);
+  t('Budget_History row', plan.budgetRows, [{ category: 'Food', budget: 1000000, spent: 100000, remaining: 900000, status: 'Under' }]);
+  // A November payment on a paid record keeps it in the main sheet (its row stays there)
+  const snap2 = testClosingSnap_();
+  snap2.trx.push(Object.assign({}, snap2.trx[4], { _row: 20, 'trx id': 'TRX-0020', date: new Date(2026, 10, 1), 'debt id': 'PTG-001' }));
+  t('a later row on a paid record keeps it', closingPlan_(snap2, 2026, 9).removeDebts, []);
+  const snap3 = testClosingSnap_();
+  snap3.trx.push({ _row: 30, 'trx id': 'TRX-0030', date: '', amount: 1 });
+  t('a row without a date blocks closing', closingPlan_(snap3, 2026, 9).errors.length, 1);
+  // Archive: only up to the month end; a purchase gets back what a later sale took
+  const snap4 = testClosingSnap_();
+  snap4.sales.push({ row: 3, saleId: 'SAL-0002', invId: 'INV-0002', date: new Date(2026, 10, 1), qty: 1, price: 1100000, fee: 0, link: 'LNK-9' });
+  snap4.investments[1].qty = 1;
+  const trim = archiveTrimPlan_(snap4, new Date(2026, 10, 1));
+  t('archive trim', [trim.removeTrx, trim.removeSales, trim.invChanges], [[9], [3], { 3: { 'Quantity': 2, 'Status': 'Holding' } }]);
+  // Which month may be closed
+  const nov2 = new Date(2026, 10, 2, 9), nov30 = new Date(2026, 10, 30, 18);
+  t('October can be closed on 2 Nov', closingBlocker_(2026, 9, snap.trx, {}, nov2), '');
+  t('November is not over on 2 Nov', /isn't over yet/.test(closingBlocker_(2026, 10, [], {}, nov2)), true);
+  t('November on its last day, but October still open → October first',
+    /Close October 2026 first/.test(closingBlocker_(2026, 10, snap.trx, {}, nov30)), true);
+  t('already closed', /already closed/.test(closingBlocker_(2026, 9, [], { 202610: { status: 'Closed' } }, nov2)), true);
+  t('/closing without a month → the oldest month with rows', closingMonth_('', snap.trx, nov2), { year: 2026, month: 9, given: false });
+  // Months typed
+  t('months', ['oktober 2026', 'okt', 'desember', '10 2026', '2026-10', 'bulan september 2026', 'xyz'].map(function (s) {
+    const m = parseMonthArg_(s, nov2);
+    return m ? m.year + '-' + (m.month + 1) : null;
+  }), ['2026-10', '2026-10', '2025-12', '2026-10', '2026-10', '2026-9', null]);
+  console.log((pass === 15 ? 'PASS' : 'FAIL') + ': testClosing ' + pass + '/15');
+}
+
+function testReport() {
+  let pass = 0;
+  const t = function (name, actual, expected) { if (checkCase_(name, { v: actual }, { v: expected })) pass++; };
+  const snap = testClosingSnap_();
+  const openings = {};
+  snap.walletRows.forEach(function (w) { openings[w.wallet] = w['opening balance']; });
+  const src = Object.assign({}, snap, { openings: openings, prev: { income: 4000000, expense: 200000, portfolio: 1500000 },
+    closedItems: [{ kind: 'Piutang', id: 'PTG-001', name: 'Budi', amount: 300000, result: 'Paid' }] });
+  const r = buildReportData_(src, 2026, 9, new Date(2026, 10, 1));
+  t('income, expense, net, adjustments', [r.income, r.expense, r.net, r.adjustments], [5000000, 100000, 4900000, 10000]);
+  t('categories and top expense', [r.categories, r.top.map(function (x) { return x.note; })],
+    [[{ name: 'Food', amount: 100000, pct: 1 }], ['KFC']]);
+  t('wallets start → end', r.wallets.map(function (w) { return [w.name, w.start, w.end]; }), [['BCA', 1000000, 5600000], ['GoPay', 0, 210000]]);
+  t('transfers between groups', r.transfers,
+    [{ name: 'Investment → Spending', amount: 1200000 }, { name: 'Spending → Investment', amount: 1000000 }]);
+  t('piutang / hutang', [r.piutang.created, r.piutang.paid, r.piutang.remaining, r.piutang.open, r.hutang.created, r.hutang.remaining],
+    [800000, 500000, 300000, 1, 80300, 80300]);
+  t('investments', [r.investments.invested, r.investments.sold, r.investments.value, r.investments.realized, r.investments.change],
+    [1000000, 1200000, 2000000, 200000, 500000]);
+  t('net worth = cash + investments + piutang − hutang', r.netWorth, 5600000 + 210000 + 2000000 + 300000 - 80300);
+  t('budgets from the Categories tab', r.budgets, [{ name: 'Food', budget: 1000000, spent: 100000 }]);
+  t('by person', r.users.map(function (u) { return [u.name, u.income, u.expense]; }), [['Daniel', 0, 100000], ['Partner', 5000000, 0]]);
+  const text = formatReportText_(r, true, 'closed', 'https://x');
+  t('chat text: spoilers, vs last month, archive link', [/<tg-spoiler>Rp5\.000\.000<\/tg-spoiler>/.test(text), /income ▲25%/.test(text),
+    /Full report/.test(text), /PTG-001/.test(text)], [true, true, true, true]);
+  t('Report tab rows have 4 columns', reportSheetRows_(r).every(function (x) { return x.length === 4; }), true);
+  const row = reportRowValues_(r, 'Closed', '', 'L', '');
+  t('Monthly Report row', [row['Month Key'], row['Net Worth']], [202610, 8029700]);
+  console.log((pass === 12 ? 'PASS' : 'FAIL') + ': testReport ' + pass + '/12');
+}

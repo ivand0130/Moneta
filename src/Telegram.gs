@@ -222,6 +222,12 @@ function scheduleDelete_(chatId, messageId, seconds) {
  * time before deleting it, so a 60s delete happens at ~60s, not up to 2 min.
  */
 function cleanupMessages() {
+  // A monthly closing waiting to run (Closing.gs) — exits at once when there is none.
+  try {
+    processClosingJob_();
+  } catch (err) {
+    logError_('processClosingJob_', err);
+  }
   // Bill photos waiting to be read (OCR.gs) — exits at once when there are none.
   try {
     processOcrQueue_();

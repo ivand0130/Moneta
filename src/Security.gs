@@ -126,9 +126,10 @@ function handlePasswordInput_(message, state) {
   deleteMessage(chatId, message.message_id);
   if (state.promptId) deleteMessage(chatId, state.promptId);
   clearPasswordState_(chatId);
-  const extra = { filter: state.filter, salt: state.salt, hash: state.hash, cmdId: state.cmdId, only: state.only };
+  const extra = { filter: state.filter, salt: state.salt, hash: state.hash, cmdId: state.cmdId, only: state.only,
+    year: state.year, month: state.month, sheetId: state.sheetId };
 
-  if (['saldo', 'budget', 'adjust', 'open', 'cp_old'].indexOf(state.purpose) !== -1) {
+  if (['saldo', 'budget', 'adjust', 'open', 'closing', 'setsheet', 'cp_old'].indexOf(state.purpose) !== -1) {
     const current = readSheetPassword_();
     if (current.error) {
       sendMessage(chatId, current.error);
@@ -154,6 +155,10 @@ function handlePasswordInput_(message, state) {
       beginAdjust_(chatId, state.filter, state.cmdId);
     } else if (state.purpose === 'open') {
       showOpen_(chatId, current.value === DEFAULT_PASSWORD, state.only, state.filter);
+    } else if (state.purpose === 'closing') {
+      queueClosing_(chatId, state.year, state.month);
+    } else if (state.purpose === 'setsheet') {
+      checkNewSheet_(chatId, state.sheetId, null);
     } else {
       askPassword_(chatId, 'cp_new', {}, '🔑 Send the <b>new</b> password (numbers only, at least 4 digits).');
     }

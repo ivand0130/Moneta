@@ -244,7 +244,8 @@ function advanceTrx_(p, ctx) {
 
   if (isMonthClosed_(ctx.ss, d.date)) {
     const month = Utilities.formatDate(new Date(d.date), Session.getScriptTimeZone(), 'MMMM yyyy');
-    return showStep_(p, '⛔ ' + month + " is closed, so entries can't be dated in it.\nUse today's date instead?",
+    return showStep_(p, '⛔ ' + month + " is closed, so entries can't be dated in it.\nUse today's date instead? " +
+      '(To correct a wallet balance from that month, use /adjust.)',
       [[btn_(p, "📅 Use today", 'today'), btn_(p, '❌ Cancel', 'n')]]);
   }
 
@@ -1002,7 +1003,8 @@ function handleCallback_(cq) {
   else if (p.kind === 'inv') invCallback_(p, action, arg, getUserByChatId_(chatId));
   else if (p.kind === 'ocr') ocrCallback_(p, action, arg, getUserByChatId_(chatId));
   else if (p.kind === 'undoimg') undoImageCallback_(p, action);
-}
+  else if (p.kind === 'close') closingCallback_(p, action);
+  else if (p.kind === 'sheet') sheetCallback_(p, action);}
 
 /** Friendly reply for a message the parser couldn't use. */
 function parseErrorText_(r) {

@@ -1096,6 +1096,7 @@ function upgradeSheets() {
     console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeDebtColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.FAVORITES));
+    console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.PRICES)); // Month-End (the Dashboard reads it)
     console.log(ss.getName() + ' → ' + backfillCategoryHistory_(ss));
     console.log(ss.getName() + ' → ' + rebuildDashboard_(ss));
   });
@@ -1192,6 +1193,13 @@ function upgradeSettings() {
       writeRowsByHeaders_(sheet, lastDataRow_(sheet, 'Setting') + 1, missing.map(function (s) {
         return { 'Setting': s[0], 'Value': s[1], 'Notes': s[2] };
       }));
+    }
+    // Info rows show the folder IDs kept in Script Properties (only on the main sheet; the template stays clean).
+    if (id === getProp_(PROP.MAIN_SHEET_ID)) {
+      [['Archive Folder ID', PROP.ARCHIVE_FOLDER_ID], ['Receipts Folder ID', PROP.RECEIPTS_FOLDER_ID]].forEach(function (x) {
+        const v = getProp_(x[1]);
+        if (v) setSettingValue_(ss, x[0], v);
+      });
     }
     const removed = removeObsoleteSettings_(sheet);
     const done = [];
@@ -1378,6 +1386,41 @@ function buildDashboard_(ss, sheet, r) {
   sheet.getRange('AJ3:AO60').setNumberFormat(RP);
   sheet.getRange('T2:AO2').setFontWeight('bold');
 
+  // Investment categories: value at the start of this month (AH), from the month-end snapshot closing writes
+  // into Price_History (Month-End = Yes, dated the last day of last month). Blank when there is none.
+  const P = TAB.PRICES, S = TAB.SALES;
+  const lastEom = 'EOMONTH(TODAY(),-1)';
+  const snapOn = 'COUNTIFS(' + r(P, 'Month-End') + ',"Yes",' + r(P, 'Date') + ',' + lastEom + ')';
+  sheet.getRange('AH2').setValue('Month Start');
+  sheet.getRange('AH3').setFormula('=MAP(AE3:AE30,LAMBDA(c,IF(OR(c="",' + snapOn + '=0),,SUMPRODUCT((' + r(P, 'Month-End') +
+    '="Yes")*(' + r(P, 'Date') + '=' + lastEom + ')*(IFERROR(VLOOKUP(' + r(P, 'Inv ID') + ',{' + r(I, 'Inv ID') + ',' +
+    r(I, 'Investment Category') + '},2,FALSE),"")=c),N(+' + r(P, 'Value') + ')))))');
+  sheet.getRange('AH3:AH30').setNumberFormat(RP);
+
+  // ---- 📈 Investments this month (K:P, top right) --------------------------------------------------------
+  section('K4', '📈 Investments this month');
+  labels('K5:O5', ['Bought', 'Sold', 'Realized gain', 'Portfolio now', 'Change since month start']);
+  values('K6:O6').setFormulas([[
+    '=SUMIFS(' + amt + ',' + type + ',"Investment Buy"' + thisMonth + ')',
+    '=SUMIFS(' + amt + ',' + type + ',"Investment Sell"' + thisMonth + ')',
+    '=SUMIFS(' + r(S, 'Realized Gain') + ',' + r(S, 'Sale Date') + ',">="&' + ms + ',' + r(S, 'Sale Date') + ',"<"&' + nx + ')',
+    '=SUM(' + r(I, 'Current Value') + ')',
+    '=IF(' + snapOn + '=0,"—",N6-SUMIFS(' + r(P, 'Value') + ',' + r(P, 'Month-End') + ',"Yes",' + r(P, 'Date') + ',' + lastEom + '))'
+  ]]).setNumberFormat(RP);
+  sheet.getRange('O7').setValue('incl. money added or taken out').setFontColor('#999999').setFontSize(9);
+  header('K9:O9', ['Category', 'Month Start', 'Now', 'Change', 'Gain/Loss %']);
+  sheet.getRange('K10').setFormula('=IFERROR(FILTER(AE3:AE30,AE3:AE30<>""),"No investments yet")');
+  sheet.getRange('L10:O10').setFormulas([[
+    '=MAP(K10:K16,LAMBDA(c,IF(OR(c="",c="No investments yet"),,IFERROR(INDEX(AH3:AH30,MATCH(c,AE3:AE30,0)),""))))',
+    '=MAP(K10:K16,LAMBDA(c,IF(OR(c="",c="No investments yet"),,SUMIFS(AF3:AF30,AE3:AE30,c))))',
+    '=MAP(L10:L16,M10:M16,LAMBDA(a,b,IF(OR(a="",b=""),,b-a)))',
+    '=MAP(K10:K16,M10:M16,LAMBDA(c,v,IF(OR(c="",v=""),,IFERROR(SUMIFS(AG3:AG30,AE3:AE30,c)/(v-SUMIFS(AG3:AG30,AE3:AE30,c)),""))))']]);
+  sheet.getRange('L10:N16').setNumberFormat(RP);
+  sheet.getRange('O10:O16').setNumberFormat('0.0%');
+  sheet.getRange('K5:O7').setBackground('#f3f6fb');
+  sheet.getRange('K17').setValue('Month Start comes from the closing snapshot of last month (blank before the first closing).')
+    .setFontColor('#999999').setFontSize(9);
+
   // ---- 📅 This month ----------------------------------------------------------------------------------
   section('B4', '📅 This month');
   labels('B5:F5', ['Income', 'Expense', 'Net saved', 'Savings rate', 'Spent per day']);
@@ -1510,6 +1553,8 @@ function buildDashboard_(ss, sheet, r) {
     rule().whenNumberGreaterThan(1).setFontColor(red).setBold(true).setRanges([sheet.getRange('E21:E45'), sheet.getRange('O21:O45')]).build(),
     rule().whenFormulaSatisfied('=AND(ISNUMBER($O21),$O21>DAY(TODAY())/DAY(EOMONTH(TODAY(),0))+0.15)').setFontColor(orange)
       .setRanges([sheet.getRange('O21:O45')]).build(),
+    rule().whenNumberLessThan(0).setFontColor(red).setRanges([sheet.getRange('M6:O6'), sheet.getRange('N10:O16')]).build(),
+    rule().whenNumberGreaterThan(0).setFontColor(green).setRanges([sheet.getRange('M6'), sheet.getRange('O6'), sheet.getRange('N10:O16')]).build(),
     rule().whenNumberLessThan(0).setFontColor(red).setBold(true).setRanges([sheet.getRange('G60:G69')]).build(),
     rule().whenNumberBetween(0, 3).setFontColor(orange).setRanges([sheet.getRange('G60:G69')]).build()
   ]);

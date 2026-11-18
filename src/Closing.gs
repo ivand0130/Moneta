@@ -120,11 +120,33 @@ function closingPlan_(snap, year, month) {
     if (!latest[id] || (p['date'] instanceof Date && latest[id]['date'] instanceof Date && p['date'] >= latest[id]['date']) ||
         !(latest[id]['date'] instanceof Date)) latest[id] = p;
   });
+  // Month-end snapshots (Month-End = Yes) stay: /report and the Dashboard read each month's opening values from them.
   const removePrices = snap.prices.filter(function (p) {
     const id = str(p['inv id']);
     if (goneInv[id]) return true;
+    if (str(p['month-end']).toLowerCase() === 'yes') return false;
     return p['date'] instanceof Date && p['date'] < end && latest[id] !== p;
   }).map(function (p) { return p._row; });
+
+  // Month-end snapshot (SPEC 8 "Closing & reporting"): one Price_History row per purchase held at the month end,
+  // with the price that counted on that day (the last price up to the month end, else the buy price).
+  const lastDay = new Date(year, month + 1, 0);
+  const priceAt = {};
+  snap.prices.forEach(function (p) {
+    const id = str(p['inv id']);
+    if (!id || !(p['date'] instanceof Date) || p['date'] >= end || p['price'] === '' || p['price'] === null) return;
+    if (!priceAt[id] || p['date'] >= priceAt[id].date) priceAt[id] = { date: p['date'], price: Number(p['price']) || 0 };
+  });
+  const snapshotRows = snap.investments.filter(function (x) {
+    return x.id && x.date && x.date < end && !goneInv[x.id];
+  }).map(function (x) {
+    const laterSold = snap.sales.filter(function (s) { return s.invId === x.id && !(s.date && s.date < end); })
+      .reduce(function (t, s) { return t + s.qty; }, 0);
+    const qty = roundInv_(x.qty + laterSold);
+    const current = x.current !== null && x.current !== undefined && (!x.lastUpdate || x.lastUpdate < end) ? x.current : null;
+    const price = priceAt[x.id] ? priceAt[x.id].price : current !== null ? current : x.price;
+    return { date: lastDay, invId: x.id, asset: x.asset, price: price, value: Math.round(qty * lotMult_(x.unit) * price), qty: qty };
+  }).filter(function (r) { return r.qty > 1e-9; });
 
   // Budgets of this month (Budget_History)
   const budgetRows = (snap.categories || []).filter(function (c) { return c.type === 'Expense' && c.budget > 0; }).map(function (c) {
@@ -137,7 +159,7 @@ function closingPlan_(snap, year, month) {
   const categoryRows = categoryTotals_(removed, start, end);
 
   return {
-    errors: errors, start: start, end: end, categoryRows: categoryRows,
+    errors: errors, start: start, end: end, categoryRows: categoryRows, snapshotRows: snapshotRows,
     removeTrx: removed.map(function (r) { return r._row; }), keepCount: kept.length,
     removedCount: removed.length, removedSum: removed.reduce(function (s, r) { return s + amt(r); }, 0),
     openings: openings, debtChanges: debtChanges,
@@ -324,6 +346,7 @@ function archiveFolder_() {
   const found = parent.getFoldersByName('Archive');
   const folder = found.hasNext() ? found.next() : parent.createFolder('Archive');
   PropertiesService.getScriptProperties().setProperty(PROP.ARCHIVE_FOLDER_ID, folder.getId());
+  try { setSettingValue_(openMainSheet_(), 'Archive Folder ID', folder.getId()); } catch (err) { /* info row only */ }
   return folder;
 }
 
@@ -631,6 +654,7 @@ function runClosingJob_(job) {
       rewriteTableRows_(ss.getSheetByName(TAB.SALES), plan.removeSales, {});
       rewriteTableRows_(ss.getSheetByName(TAB.INVESTMENTS), plan.removeInv, {});
       rewriteTableRows_(ss.getSheetByName(TAB.PRICES), plan.removePrices, {});
+      appendRows_(ss.getSheetByName(TAB.PRICES), 'Inv ID', snapshotObjects_(plan.snapshotRows));
       const kept = rewriteTransactions_(ss, plan.removeTrx);
       const src = collectReportSource_(archive); // the full copy from just before: the month's numbers
       src.prev = previousTotals_(loadReportRows_(ss), src.trx, key);
@@ -676,6 +700,7 @@ function runClosingJob_(job) {
     rewriteTableRows_(archive.getSheetByName(TAB.INVESTMENTS), trim.removeInv, trim.invChanges);
     rewriteTableRows_(archive.getSheetByName(TAB.PRICES), trim.removePrices, {});
     rewriteTableRows_(archive.getSheetByName(TAB.DEBTS), trim.removeDebts, {});
+    appendRows_(archive.getSheetByName(TAB.PRICES), 'Inv ID', snapshotObjects_(plan.snapshotRows));
     setSettingValue_(archive, SETTING.PASSWORD, ''); // the archive is a record, not a place for the /saldo password
     SpreadsheetApp.flush();
     const reportRows = loadReportRows_(ss);
@@ -687,6 +712,7 @@ function runClosingJob_(job) {
     upsertReportRow_(ss, reportRowValues_(r, 'Closed', closedAt, archive.getUrl(), 'Closed by ' + job.by));
     upsertReportRow_(archive, reportRowValues_(r, 'Closed', closedAt, archive.getUrl(), 'Archive of ' + label));
     const tab = writeArchiveReportTab_(archive, r);
+    protectArchive_(archive, label);
     reportText = formatReportText_(r, getSettingYes_(SETTING.HIDE_AMOUNTS), 'closed', archive.getUrl() + '#gid=' + tab.getSheetId());
   } catch (err) {
     logError_('runClosingJob_ (archive report)', err, key);
@@ -703,6 +729,28 @@ function runClosingJob_(job) {
     try { sendTimed_(chatId, reportText, NET_WORTH_DELETE_SECONDS); } catch (err) { logError_('runClosingJob_ (send report)', err, chatId); }
   });
   recordEvent_('closing ' + key + ': done');
+}
+
+/** Price_History objects of the month-end snapshot (Source "Closing", Month-End "Yes"). */
+function snapshotObjects_(rows) {
+  return (rows || []).map(function (r) {
+    return { 'Date': r.date, 'Inv ID': r.invId, 'Asset Name': r.asset, 'Price': r.price, 'Value': r.value, 'Source': 'Closing',
+      'Month-End': 'Yes' };
+  });
+}
+
+/**
+ * A closed month is final (SPEC 18): every tab of its archive gets a warning-only protection, so an
+ * accidental edit asks "are you sure?" first. (The script itself can still write it.)
+ */
+function protectArchive_(archive, label) {
+  archive.getSheets().forEach(function (sheet) {
+    try {
+      sheet.protect().setDescription('Archive of ' + label + ' (closed month)').setWarningOnly(true);
+    } catch (err) {
+      logError_('protectArchive_', err, sheet.getName());
+    }
+  });
 }
 
 /** The archive's Report tab (first tab), plain amounts. Returns the sheet. */
@@ -736,8 +784,9 @@ function runClosingOverdueReminder_(now) {
   if (monthKey_(ym.year, ym.month) >= monthKey_(now.getFullYear(), now.getMonth())) return; // nothing older than this month
   const text = '📅 <b>' + escapeHtml_(monthLabel_(ym.year, ym.month, true)) + "</b> isn't closed yet. When everything is logged, " +
     'close it with /closing (months are closed oldest first).';
+  const buttons = { reply_markup: keyboard_([[['🔒 Start closing', 'CL|start']]]) };
   uniqueChatIds_((getUsers_() || []).filter(function (u) { return u.active; })).forEach(function (chatId) {
-    try { sendMessage(chatId, text); } catch (err) { logError_('runClosingOverdueReminder_', err, chatId); }
+    try { sendMessage(chatId, text, buttons); } catch (err) { logError_('runClosingOverdueReminder_', err, chatId); }
   });
 }
 
@@ -748,7 +797,8 @@ function runClosingReminder_(now) {
   if (row && String(row['status']).trim().toLowerCase() === 'closed') return;
   const text = '📅 Today is the last day of <b>' + escapeHtml_(monthLabel_(now.getFullYear(), now.getMonth(), true)) + '</b>. ' +
     'When everything for this month is logged (and prices are updated), close it with /closing.';
+  const buttons = { reply_markup: keyboard_([[['🔒 Start closing', 'CL|start']]]) }; // shows the summary first (handleCallback_)
   uniqueChatIds_((getUsers_() || []).filter(function (u) { return u.active; })).forEach(function (chatId) {
-    try { sendMessage(chatId, text); } catch (err) { logError_('runClosingReminder_', err, chatId); }
+    try { sendMessage(chatId, text, buttons); } catch (err) { logError_('runClosingReminder_', err, chatId); }
   });
 }

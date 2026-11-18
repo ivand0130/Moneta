@@ -186,9 +186,15 @@ function resolveDebtTarget_(p, ctx) {
     const exact = findDebtById_(debts, d.id);
     if (!exact) return finishStep_(p, 'I can\'t find ' + escapeHtml_(d.id) + '. Use /open to see the open records.');
     if (!isOpenDebt_(exact)) {
-      return finishStep_(p, escapeHtml_(exact.id) + ' is already ' + escapeHtml_(exact.status) +
-        ' and can\'t be changed.' + (d.kind === 'add' ? ' To lend/borrow again, create a new one, e.g. <code>piutang 100rb ' +
-        escapeHtml_(exact.name) + '</code>.' : ''));
+      const closed = escapeHtml_(exact.id) + ' is already ' + escapeHtml_(exact.status) + ' and can\'t be changed.';
+      // Adding to a Paid/Converted record creates a new record instead (SPEC Section 7): offer it as a button.
+      if (d.kind === 'add' && d.amount && childrenOf_(debts, exact.id).length === 0) {
+        return showStep_(p, closed + ' Create a new ' + exact.type.toLowerCase() + ' for <b>' + escapeHtml_(exact.name) +
+          '</b> with ' + formatRp_(d.amount) + ' instead?',
+          [[btn_(p, '➕ Create new ' + exact.type + ' for ' + exact.name, 'closednew')], cancelRow_(p)]);
+      }
+      return finishStep_(p, closed + (d.kind === 'add' ? ' To lend/borrow again, create a new one, e.g. <code>' +
+        exact.type.toLowerCase() + ' 100rb ' + escapeHtml_(exact.name) + '</code>.' : ''));
     }
     const kids = childrenOf_(debts, exact.id).filter(isOpenDebt_);
     if (kids.length && d.kind === 'add') return pickDebt_(p, kids, 'Which person of ' + exact.id + '?');
@@ -374,20 +380,21 @@ function buildDebtPreview_(p, ctx, footer) {
   const lines = d.ocrHeader ? [d.ocrHeader, ''] : []; // a GoPay Split Bill photo
   const dateLine = '📅 ' + formatDate_(d.date) + (d.note ? '\n📝 ' + escapeHtml_(d.note) : '');
   const newContacts = [];
+  const walletLabel = debtWalletLabel_(ctx, d.wallet); // "BCA (Spending)", like normal previews
   if (d.kind === 'new' && !d.group) {
     const piutang = d.debtType === 'Piutang';
     lines.push('🤝 <b>Preview · ' + d.debtType + '</b> (' + (piutang ? 'you lend' : 'you borrow') + ')',
-      escapeHtml_(d.name) + ' · <b>' + formatRp_(d.amount) + '</b> · ' + (piutang ? 'from ' : 'into ') + escapeHtml_(d.wallet),
+      escapeHtml_(d.name) + ' · <b>' + formatRp_(d.amount) + '</b> · ' + (piutang ? 'from ' : 'into ') + walletLabel,
       'Term: ' + d.term + (d.due ? ' · Due: ' + formatDate_(d.due) : (d.term === 'Long' ? '' : ' · No due date')),
       dateLine);
     if (!d.known) newContacts.push(d.name);
   } else if (d.kind === 'new') {
     lines.push('🤝 <b>Preview · Group ' + d.debtType.toLowerCase() + '</b> · <b>' + formatRp_(d.total) + '</b> from ' +
-      escapeHtml_(d.wallet));
+      walletLabel);
     d.people.forEach(function (x) { lines.push('• ' + escapeHtml_(x.name) + ': ' + formatRp_(x.amount)); if (!x.known) newContacts.push(x.name); });
     lines.push('Term: ' + d.term + (d.due ? ' · Due: ' + formatDate_(d.due) : ''), dateLine);
   } else if (d.kind === 'split') {
-    lines.push('🧾 <b>Preview · Split bill</b> · <b>' + formatRp_(d.total) + '</b>', '👛 Wallet: ' + escapeHtml_(d.wallet));
+    lines.push('🧾 <b>Preview · Split bill</b> · <b>' + formatRp_(d.total) + '</b>', '👛 Wallet: ' + walletLabel);
     if (d.me > 0) lines.push('• You: ' + formatRp_(d.me) + ' → Expense · ' + escapeHtml_(d.category) +
       ' <i>(' + (CATEGORY_HOW_LABEL[d.categoryHow] || 'you picked') + ')</i>');
     d.people.forEach(function (x) {
@@ -403,7 +410,7 @@ function buildDebtPreview_(p, ctx, footer) {
       const plan = allocatePayment_(recs, d.amount);
       lines.push('💸 <b>Preview · Payment</b> · ' + escapeHtml_(rec.name),
         (piutang ? escapeHtml_(rec.name) + ' pays you ' : 'You pay ' + escapeHtml_(rec.name) + ' ') + '<b>' + formatRp_(d.amount) +
-          '</b> · ' + (piutang ? 'into ' : 'from ') + escapeHtml_(d.wallet));
+          '</b> · ' + (piutang ? 'into ' : 'from ') + walletLabel);
       if (plan.parts.length > 1) lines.push('<i>Nearest due date first, then the oldest:</i>');
       plan.parts.forEach(function (x) {
         const after = x.rec.remaining - x.amount;
@@ -422,7 +429,7 @@ function buildDebtPreview_(p, ctx, footer) {
       }
     } else if (d.kind === 'add') {
       lines.push('➕ <b>Preview · Add to ' + escapeHtml_(rec.id) + '</b> (' + escapeHtml_(rec.name) + ')',
-        '+' + formatRp_(d.amount) + ' · ' + (piutang ? 'from ' : 'into ') + escapeHtml_(d.wallet),
+        '+' + formatRp_(d.amount) + ' · ' + (piutang ? 'from ' : 'into ') + walletLabel,
         'Remaining after: ' + formatRp_(rec.remaining + d.amount));
     } else {
       const targets = convertTargetsOf_(ctx.debts, recs);
@@ -436,8 +443,92 @@ function buildDebtPreview_(p, ctx, footer) {
     lines.push('📅 ' + formatDate_(d.date));
   }
   if (newContacts.length) lines.push('👤 New contact' + (newContacts.length > 1 ? 's' : '') + ': ' + escapeHtml_(newContacts.join(', ')));
+  const warnings = debtPreviewChecks_(p, ctx);
+  if (warnings.length) lines.push('', warnings.join('\n'));
   lines.push('', footer || 'Save?');
   return lines.join('\n');
+}
+
+/** "BCA (Spending)": the wallet with its group, escaped. */
+function debtWalletLabel_(ctx, name) {
+  const w = findWallet_(ctx.wallets, name);
+  return escapeHtml_(name || '') + (w && w.group ? ' (' + escapeHtml_(w.group) + ')' : '');
+}
+
+/**
+ * The Transactions rows this draft will write that move money, as
+ * { type, amount, wallet, note, delta } (delta = wallet change, + in / - out).
+ * Mirrors saveDebt_ so the preview warns about what will really be saved.
+ * Conversions move no money, so they have none.
+ */
+function debtPlannedRows_(p, ctx) {
+  const d = p.d;
+  const out = [];
+  const row = function (type, amount, delta, note) { out.push({ type: type, amount: amount, wallet: d.wallet, note: note, delta: delta }); };
+  if (d.kind === 'new' && !d.group) {
+    const piutang = d.debtType === 'Piutang';
+    row(d.debtType, d.amount, piutang ? -d.amount : d.amount, d.note || (piutang ? 'Lent to ' : 'Borrowed from ') + d.name);
+  } else if (d.kind === 'new') {
+    // The real note holds the new group ID, so only a typed note can match an earlier row.
+    d.people.forEach(function (x) { row(d.debtType, x.amount, d.debtType === 'Piutang' ? -x.amount : x.amount, d.note || null); });
+  } else if (d.kind === 'split') {
+    if (d.me > 0) row('Expense', d.me, -d.me, d.note || 'Split bill (my share)');
+    d.people.forEach(function (x) { row('Piutang', x.amount, -x.amount, 'Split bill: ' + (d.note || x.name)); });
+  } else if (d.kind === 'pay' || d.kind === 'add') {
+    const recs = (d.recordIds || []).map(function (id) { return findDebtById_(ctx.debts, id); }).filter(Boolean);
+    if (!recs.length) return out;
+    const rec = recs[0];
+    const piutang = rec.type === 'Piutang';
+    if (d.kind === 'add') {
+      row('Addition', d.amount, piutang ? -d.amount : d.amount, d.note || 'Added to ' + rec.id);
+      return out;
+    }
+    const plan = allocatePayment_(recs, d.amount);
+    plan.parts.forEach(function (x) {
+      row('Settlement', x.amount, piutang ? x.amount : -x.amount,
+        d.note || (piutang ? rec.name + ' paid back ' : 'Paid back ' + rec.name + ' ') + x.rec.id);
+    });
+    if (plan.extra > 0) { // the extra comes in (piutang) or goes out (hutang) whatever it becomes
+      const type = d.overpay === 'flip' ? (piutang ? 'Hutang' : 'Piutang') : (piutang ? 'Income' : 'Expense');
+      row(type, plan.extra, piutang ? plan.extra : -plan.extra, null);
+    }
+  }
+  return out;
+}
+
+/**
+ * The same warnings as normal previews (SPEC Section 14): large amount,
+ * possible duplicate, a wallet going negative, a future date. They never
+ * block saving.
+ */
+function debtPreviewChecks_(p, ctx) {
+  const d = p.d;
+  const out = [];
+  const total = d.kind === 'split' || (d.kind === 'new' && d.group) ? d.total : d.amount;
+  const large = getSettingInt_(SETTING.LARGE_AMOUNT);
+  if (large > 0 && total > large) out.push('⚠️ Large amount (over ' + formatRp_(large) + ').');
+  const planned = debtPlannedRows_(p, ctx);
+  const withNote = planned.filter(function (r) { return r.note !== null; });
+  if (withNote.length) {
+    const rows = loadTransactions_(ctx.ss);
+    const minutes = getSettingInt_(SETTING.DUPLICATE_MINUTES);
+    for (let i = 0; i < withNote.length; i++) {
+      const r = withNote[i];
+      const dup = findDuplicate_(rows, { type: r.type, amount: r.amount, note: r.note, date: d.date }, minutes);
+      if (dup) {
+        out.push('⚠️ Possible duplicate of ' + escapeHtml_(dup['trx id'] || 'an existing row') +
+          ' (same type, amount and name). Save it again?');
+        break;
+      }
+    }
+  }
+  const delta = planned.reduce(function (s, r) { return s + r.delta; }, 0);
+  const w = findWallet_(ctx.wallets, d.wallet);
+  if (w && delta < 0 && w.balance + delta < 0) {
+    out.push('⚠️ ' + escapeHtml_(w.name) + ' would go negative (' + formatRp_(w.balance + delta) + ').');
+  }
+  if (d.date > Date.now() + 60000) out.push('⚠️ This date is in the future.');
+  return out;
 }
 
 /** A convert on a group parent converts every open sub-record. */
@@ -489,6 +580,14 @@ function debtCallback_(p, action, arg, user) {
     case 'newrec': // "No open record — create a new one"
       Object.assign(d, { kind: 'new', group: false, recordId: null, recordIds: null });
       break;
+    case 'closednew': { // "add PTG-001 …" but PTG-001 is Paid/Converted → a new record for the same person
+      const old = findDebtById_(ctx.debts, d.id);
+      if (!old) return finishStep_(p, 'I can\'t find ' + escapeHtml_(d.id || '') + '. Use /open to see the open records.');
+      const contact = findContact_(ctx.contacts || [], old.name);
+      Object.assign(d, { kind: 'new', group: false, recordId: null, recordIds: null, recordType: null, id: null,
+        debtType: old.type, name: contact ? contact.name : old.name, known: !!contact, term: d.term || 'Short' });
+      break;
+    }
     case 'term': d.term = d.term === 'Long' ? 'Short' : 'Long'; if (d.term === 'Long') d.due = null; break;
     case 'nodue': d.due = null; break;
     case 'e':

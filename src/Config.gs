@@ -137,7 +137,8 @@ const SETTING_ROWS = [
   [SETTING.CLOSING_REMINDER_TIME, '18:00', 'Last day of the month: reminder to close the month.'],
   [SETTING.DEBT_DAYS_BEFORE_DUE, '3', 'Start reminding this many days before a due date.'],
   ['Main Sheet ID', '', 'Info only (written by the script). The real value is in Script Properties.'],
-  ['Archive Folder ID', '', 'Info only. Set with /setarchive (closing archives go there; a MonetaBot/Archive folder is made on the first closing).']
+  ['Archive Folder ID', '', 'Info only. Set with /setarchive (closing archives go there; a MonetaBot/Archive folder is made on the first closing).'],
+  ['Receipts Folder ID', '', 'Info only. Set with /setreceipts (bill photos go there; a MonetaBot/Receipts folder is made with the first photo).']
 ];
 
 /** The /saldo reply is deleted this many seconds after it's sent (fixed by the owner's choice). */

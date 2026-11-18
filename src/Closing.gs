@@ -133,8 +133,11 @@ function closingPlan_(snap, year, month) {
       status: spent > c.budget ? 'Over' : spent === c.budget ? 'At' : 'Under' };
   });
 
+  // Every category's expense and income of this month (Category_History: the Dashboard's category trends).
+  const categoryRows = categoryTotals_(removed, start, end);
+
   return {
-    errors: errors, start: start, end: end,
+    errors: errors, start: start, end: end, categoryRows: categoryRows,
     removeTrx: removed.map(function (r) { return r._row; }), keepCount: kept.length,
     removedCount: removed.length, removedSum: removed.reduce(function (s, r) { return s + amt(r); }, 0),
     openings: openings, debtChanges: debtChanges,
@@ -142,6 +145,24 @@ function closingPlan_(snap, year, month) {
     removeInv: soldOut.map(function (x) { return x.row; }), removeSales: removeSales, removePrices: removePrices,
     closedItems: closedItems, budgetRows: budgetRows
   };
+}
+
+/**
+ * Expense and income per category of the rows dated in [start, end), by the shared rules
+ * (countsAsExpense_ / countsAsIncome_): [{ type, category, amount }], sorted. Pure.
+ */
+function categoryTotals_(rows, start, end) {
+  const by = {};
+  rows.forEach(function (r) {
+    if (!(r['date'] instanceof Date) || r['date'] < start || r['date'] >= end) return;
+    const type = countsAsExpense_(r) ? 'Expense' : countsAsIncome_(r) ? 'Income' : '';
+    if (!type) return;
+    const k = type + '|' + (String(r['category'] || '').trim() || '(none)');
+    by[k] = (by[k] || 0) + (Number(r['amount']) || 0);
+  });
+  return Object.keys(by).sort().map(function (k) {
+    return { type: k.split('|')[0], category: k.slice(k.indexOf('|') + 1), amount: by[k] };
+  });
 }
 
 /**
@@ -156,6 +177,25 @@ function archiveTrimPlan_(snap, end) {
   snap.investments.forEach(function (x) {
     const back = laterSales.filter(function (s) { return s.invId === x.id; }).reduce(function (t, s) { return t + s.qty; }, 0);
     if (back > 0 && before(x.date)) invChanges[x.row] = { 'Quantity': roundInv_(x.qty + back), 'Status': 'Holding' };
+  });
+  // Values at the month end: each purchase gets its last Price_History price up to the month end (a price
+  // typed after the month end must not count). No price up to then but a later one → blank (= buy price).
+  const lastBefore = {}, hasLater = {};
+  snap.prices.forEach(function (p) {
+    const id = String(p['inv id'] || '').trim();
+    if (!id || !(p['date'] instanceof Date) || p['price'] === '' || p['price'] === null) return;
+    if (!before(p['date'])) { hasLater[id] = true; return; }
+    if (!lastBefore[id] || p['date'] >= lastBefore[id]['date']) lastBefore[id] = p;
+  });
+  snap.investments.forEach(function (x) {
+    if (!x.id || !before(x.date)) return;
+    const p = lastBefore[x.id];
+    if (!p && !hasLater[x.id]) return; // the price never changed after the month end: keep it
+    const price = p ? Number(p['price']) || 0 : '';
+    if (price === (x.current === null || x.current === undefined ? '' : x.current)) return;
+    const change = invChanges[x.row] || (invChanges[x.row] = {});
+    change['Current Price'] = price;
+    change['Last Price Update'] = p ? p['date'] : '';
   });
   return {
     removeTrx: snap.trx.filter(function (r) { return !before(r['date']); }).map(function (r) { return r._row; }),
@@ -306,7 +346,7 @@ function archiveFileName_(year, month) {
 /** '', or what upgradeSheets must add first (closing writes Carried Paid and Closed_History). */
 function closingSchemaMissing_(ss) {
   const missing = [];
-  [TAB.CLOSED_HISTORY, TAB.BUDGET_HISTORY, TAB.REPORT].forEach(function (t) { if (ss.getSheetByName(t) === null) missing.push('tab ' + t); });
+  [TAB.CLOSED_HISTORY, TAB.BUDGET_HISTORY, TAB.CATEGORY_HISTORY, TAB.REPORT].forEach(function (t) { if (ss.getSheetByName(t) === null) missing.push('tab ' + t); });
   const debts = ss.getSheetByName(TAB.DEBTS);
   if (debts !== null && getHeaderMap_(debts)['carried paid'] === undefined) missing.push('column Hutang_Piutang → Carried Paid');
   return missing.length ? 'The sheet needs an update first (' + missing.join(', ') + '): run upgradeSheets in the Apps Script editor, then /closing again.' : '';
@@ -352,6 +392,8 @@ function startClosing_(chatId, args) {
   sendTyping_(chatId);
   const schema = closingSchemaMissing_(ss);
   if (schema) return sendMessage(chatId, '⚠️ ' + escapeHtml_(schema));
+  const held = readClosingHold_();
+  if (held) return sendMessage(chatId, closingHoldText_(held));
   const snap = closingSnapshot_(ss);
   const ym = closingMonth_(args, snap.trx, now);
   if (!ym) return sendMessage(chatId, "I couldn't read the month. Example: <code>/closing oktober 2026</code>.");
@@ -393,6 +435,10 @@ function startClosing_(chatId, args) {
   section('⭐ Favorites not logged this month', r.favorites.filter(function (f) { return f.status === 'not logged'; })
     .map(function (f) { return escapeHtml_(f.name); }));
   section('📈 No price this month (the last price is kept)', oldPrices.map(escapeHtml_));
+  if (monthKey_(ym.year, ym.month) === monthKey_(now.getFullYear(), now.getMonth())) {
+    L.push('', 'ℹ️ This month is closed on its last day, so for the rest of today budgets, /budget and the Dashboard ' +
+      'show Rp0 spent (this month\'s entries move to the archive). Entries from tomorrow count for next month as usual.');
+  }
   L.push('', '⚠️ <b>This is final</b> (there is no reopen). Entries dated in ' + escapeHtml_(label) + ' will be blocked afterwards.');
 
   const p = newPending_(chatId, 'close', { year: ym.year, month: ym.month });
@@ -441,6 +487,63 @@ function writeClosingJob_(job) {
   CacheService.getScriptCache().put('closing_job', job ? 'x' : '[]', 21600);
 }
 
+/**
+ * The closing job while it is queued or running (a stopped one older than
+ * CLOSING_STALE_MS doesn't count), or null. Cheap when there is none (cache).
+ * doPost, cleanupMessages and runReminders wait for it instead of piling up
+ * behind the closing's long lock.
+ */
+function activeClosingJob_() {
+  if (CacheService.getScriptCache().get('closing_job') === '[]') return null;
+  const job = readClosingJob_();
+  if (!job) return null;
+  if (job.state === 'running' && Date.now() - (job.startedAt || 0) > CLOSING_STALE_MS) return null;
+  if (job.state !== 'running' && Date.now() - (job.at || 0) > CLOSING_STALE_MS) return null;
+  return job;
+}
+
+/** doPost while a closing runs: the message is not logged, the sender is asked to send it again. */
+function replyClosingBusy_(update, job) {
+  const text = '⏳ The closing of ' + escapeHtml_(monthLabel_(job.year, job.month, true)) +
+    ' is running. Nothing was saved: please send this again in 2 minutes.';
+  if (update.callback_query) answerCallbackQuery(update.callback_query.id, 'Closing is running. Try again in 2 minutes.');
+  else if (update.message) sendMessage(String(update.message.chat.id), text);
+}
+
+/**
+ * A closing that stopped while it was changing the main sheet:
+ * { key, label, sheetId, archiveUrl, at }, or null. Saved just before the
+ * first write and removed when the writes are done, so running /closing again
+ * can't count the month twice. It only applies to the sheet it happened in:
+ * switching to the archive copy with /setsheet releases it.
+ */
+function readClosingHold_() {
+  let hold = null;
+  try { hold = JSON.parse(getProp_(PROP.CLOSING_HOLD) || 'null'); } catch (err) { return null; }
+  return hold && hold.sheetId === getProp_(PROP.MAIN_SHEET_ID) ? hold : null;
+}
+
+function writeClosingHold_(hold) {
+  const props = PropertiesService.getScriptProperties();
+  if (hold) props.setProperty(PROP.CLOSING_HOLD, JSON.stringify(hold));
+  else props.deleteProperty(PROP.CLOSING_HOLD);
+}
+
+function closingHoldText_(hold) {
+  return '⛔ The closing of <b>' + escapeHtml_(hold.label) + '</b> stopped halfway (' + escapeHtml_(formatDate_(new Date(hold.at))) +
+    '), so the main sheet may be partly changed. Closing again now would count that month twice, so closing is on hold.\n\n' +
+    '<b>To fix it:</b>\n1. The <a href="' + escapeHtml_(hold.archiveUrl) + '">archive copy</a> is the full sheet from just before closing.\n' +
+    '2. Send <code>/setsheet ' + escapeHtml_(hold.archiveUrl) + '</code> to use it as the main sheet ' +
+    '(anything logged after the failed closing must be logged again).\n3. Send /closing again.\n' +
+    'If you are sure the main sheet was not changed, run <b>clearClosingHold</b> in the Apps Script editor instead.';
+}
+
+/** Run from the editor ONLY when you are sure the main sheet is fine after a stopped closing. */
+function clearClosingHold() {
+  writeClosingHold_(null);
+  console.log('PASS: closing hold cleared. /closing works again.');
+}
+
 /** Called by the 1-minute cleanup trigger: runs a queued closing. Exits at once when there is none. */
 function processClosingJob_() {
   if (CacheService.getScriptCache().get('closing_job') === '[]') return;
@@ -451,9 +554,10 @@ function processClosingJob_() {
     if (job.state === 'running') {
       if (Date.now() - job.startedAt > CLOSING_STALE_MS) {
         try {
-          editMessage(job.chatId, job.msgId, '⚠️ The closing of ' + escapeHtml_(monthLabel_(job.year, job.month, true)) +
-            ' stopped before it finished. Check the Logs tab; ' + (job.archiveUrl ? 'the archive <a href="' + escapeHtml_(job.archiveUrl) +
-            '">copy</a> was taken just before.' : 'nothing was changed before the archive copy.'));
+          const hold = readClosingHold_();
+          editMessage(job.chatId, job.msgId, hold ? closingHoldText_(hold) : '⚠️ The closing of ' +
+            escapeHtml_(monthLabel_(job.year, job.month, true)) + ' stopped before it changed the main sheet. Check the Logs tab, then ' +
+            '/closing again.');
         } catch (err) { /* message gone */ }
         logError_('processClosingJob_', new Error('closing job did not finish'), JSON.stringify(job));
         writeClosingJob_(null);
@@ -493,6 +597,8 @@ function runClosingJob_(job) {
   const now = new Date();
   const blocker = closingSchemaMissing_(ss) || closingBlocker_(job.year, job.month, loadTransactions_(ss), loadReportRows_(ss), now);
   if (blocker) return editMessage(job.chatId, job.msgId, '🔒 ' + escapeHtml_(blocker));
+  const held = readClosingHold_();
+  if (held) return editMessage(job.chatId, job.msgId, closingHoldText_(held));
   progress('making the archive copy and updating the main sheet');
   const folder = archiveYearFolder_(job.year);
   const name = archiveFileName_(job.year, job.month);
@@ -512,9 +618,15 @@ function runClosingJob_(job) {
       if (copy.count !== before.count || Math.abs(copy.sum - before.sum) > 0.5) {
         throw new Error('archive check failed: ' + copy.count + ' rows / ' + copy.sum + ' in the copy vs ' + before.count + ' / ' + before.sum);
       }
+      // From here the main sheet changes: a hold (and the archive link) are saved first, so a stop
+      // (error or the 6-minute limit) can't be followed by a second closing that counts the month twice.
+      writeClosingHold_({ key: key, label: label, sheetId: ss.getId(), archiveUrl: archive.getUrl(), at: Date.now() });
+      job.archiveUrl = archive.getUrl();
+      writeClosingJob_(job);
       changing = true;
-      const wallets = ss.getSheetByName(TAB.WALLETS);
-      plan.openings.forEach(function (o) { writeRowsByHeaders_(wallets, o.row, [{ 'Opening Balance': o.value }]); });
+      const openings = {};
+      plan.openings.forEach(function (o) { openings[o.row] = { 'Opening Balance': o.value }; });
+      rewriteTableRows_(ss.getSheetByName(TAB.WALLETS), [], openings);
       rewriteTableRows_(ss.getSheetByName(TAB.DEBTS), plan.removeDebts, plan.debtChanges);
       rewriteTableRows_(ss.getSheetByName(TAB.SALES), plan.removeSales, {});
       rewriteTableRows_(ss.getSheetByName(TAB.INVESTMENTS), plan.removeInv, {});
@@ -528,6 +640,10 @@ function runClosingJob_(job) {
       appendRows_(ss.getSheetByName(TAB.BUDGET_HISTORY), 'Month Key', plan.budgetRows.map(function (b) {
         return { 'Month Key': key, 'Month': monthLabel_(job.year, job.month, false), 'Category': b.category, 'Budget': b.budget,
           'Spent': b.spent, 'Remaining': b.remaining, 'Status': b.status };
+      }));
+      appendRows_(ss.getSheetByName(TAB.CATEGORY_HISTORY), 'Month Key', plan.categoryRows.map(function (c) {
+        return { 'Month Key': key, 'Month': monthLabel_(job.year, job.month, false), 'Category': c.category, 'Type': c.type,
+          'Amount': c.amount };
       }));
       appendRows_(ss.getSheetByName(TAB.CLOSED_HISTORY), 'Month Key', plan.closedItems.map(function (c) {
         return { 'Month Key': key, 'Month': monthLabel_(job.year, job.month, false), 'Kind': c.kind, 'ID': c.id, 'Name': c.name,
@@ -545,11 +661,10 @@ function runClosingJob_(job) {
       if (archive) { try { DriveApp.getFileById(archive.getId()).setTrashed(true); } catch (e) { logError_('runClosingJob_ (trash copy)', e); } }
       return fail('Closing stopped before changing anything in the main sheet.', err);
     }
-    return fail('Closing stopped while updating the main sheet. The archive <a href="' + escapeHtml_(archive.getUrl()) +
-      '">copy</a> is the full sheet from just before closing: compare with it (or copy its tabs back) and tell me what you see.', err);
+    const hold = readClosingHold_();
+    return fail(hold ? closingHoldText_(hold) : 'Closing stopped while updating the main sheet.', err);
   }
-  job.archiveUrl = archive.getUrl();
-  writeClosingJob_(job);
+  writeClosingHold_(null); // the main sheet is complete: closing works normally again
 
   // 4. Trim the archive to this month, add its Report tab, send the report.
   progress('writing the report');
@@ -561,6 +676,7 @@ function runClosingJob_(job) {
     rewriteTableRows_(archive.getSheetByName(TAB.INVESTMENTS), trim.removeInv, trim.invChanges);
     rewriteTableRows_(archive.getSheetByName(TAB.PRICES), trim.removePrices, {});
     rewriteTableRows_(archive.getSheetByName(TAB.DEBTS), trim.removeDebts, {});
+    setSettingValue_(archive, SETTING.PASSWORD, ''); // the archive is a record, not a place for the /saldo password
     SpreadsheetApp.flush();
     const reportRows = loadReportRows_(ss);
     const src = collectReportSource_(archive);

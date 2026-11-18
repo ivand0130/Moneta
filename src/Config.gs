@@ -24,7 +24,8 @@ const PROP = {
   FAV_PROMPTS: 'FAV_PROMPTS',           // Latest favorite prompt message per favorite + chat
   OCR_QUEUE: 'OCR_QUEUE',               // Bill photos waiting to be read by the cleanup trigger
   OCR_RUNNING: 'OCR_RUNNING',           // Bill photos being read (a stuck one gets an error after 7 min)
-  CLOSING_JOB: 'CLOSING_JOB'            // A monthly closing waiting for / being run by the cleanup trigger (Closing.gs)
+  CLOSING_JOB: 'CLOSING_JOB',           // A monthly closing waiting for / being run by the cleanup trigger (Closing.gs)
+  CLOSING_HOLD: 'CLOSING_HOLD'          // A closing that stopped halfway: /closing waits until it is sorted out (Closing.gs)
 };
 
 /** Tab names in the main sheet. */
@@ -44,7 +45,8 @@ const TAB = {
   SETTINGS: 'Settings',
   LOGS: 'Logs',
   BUDGET_HISTORY: 'Budget_History',
-  CLOSED_HISTORY: 'Closed_History'    // debts / investments that closing moved out of the main sheet (Phase 8)
+  CLOSED_HISTORY: 'Closed_History',   // debts / investments that closing moved out of the main sheet (Phase 8)
+  CATEGORY_HISTORY: 'Category_History' // expense / income per category of each closed month (Dashboard trends)
 };
 
 /**

@@ -87,14 +87,32 @@ function resetPasswordFails_(chatId) {
   CacheService.getScriptCache().remove('pwfail_' + chatId);
 }
 
+/**
+ * Password guard: for a while after a password prompt (and during a lockout)
+ * a numbers-only message is treated as a password typed too late: it is
+ * deleted, never read as an amount (handleText_ in Main.gs).
+ */
+const PASSWORD_GUARD_SECONDS = 600;
+function setPasswordGuard_(chatId, seconds) {
+  CacheService.getScriptCache().put('pwguard_' + chatId, '1', seconds);
+}
+function clearPasswordGuard_(chatId) {
+  CacheService.getScriptCache().remove('pwguard_' + chatId);
+}
+function isPasswordGuarded_(chatId) {
+  return CacheService.getScriptCache().get('pwguard_' + chatId) !== null;
+}
+
 /** Sends a password prompt and remembers what the password is for. */
 function askPassword_(chatId, purpose, extra, promptText) {
   if (isPasswordLocked_(chatId)) {
+    setPasswordGuard_(chatId, PASSWORD_LOCK_SECONDS);
     sendMessage(chatId, '🔒 Too many wrong passwords. Try again in 15 minutes.');
     return;
   }
   const prompt = sendMessage(chatId, promptText +
     '\n<i>(Numbers only. Your message will be deleted right away. /cancel to stop.)</i>');
+  setPasswordGuard_(chatId, PASSWORD_GUARD_SECONDS);
   setPasswordState_(chatId, Object.assign({ purpose: purpose, promptId: prompt.message_id }, extra || {}));
 }
 
@@ -138,6 +156,7 @@ function handlePasswordInput_(message, state) {
     if (text !== current.value) {
       const fails = recordPasswordFail_(chatId);
       if (fails >= MAX_PASSWORD_FAILS) {
+        setPasswordGuard_(chatId, PASSWORD_LOCK_SECONDS);
         sendMessage(chatId, '❌ Wrong password. Locked for 15 minutes.');
         return;
       }
@@ -147,6 +166,7 @@ function handlePasswordInput_(message, state) {
       return;
     }
     resetPasswordFails_(chatId);
+    if (state.purpose !== 'cp_old') clearPasswordGuard_(chatId);
     if (state.purpose === 'saldo') {
       showSaldo_(chatId, state.filter, current.value === DEFAULT_PASSWORD);
     } else if (state.purpose === 'budget') {
@@ -183,6 +203,7 @@ function handlePasswordInput_(message, state) {
       return;
     }
     writeSheetPassword_(text);
+    clearPasswordGuard_(chatId);
     sendMessage(chatId, '✅ Password changed (it is also in Settings → Password). Use it for /saldo from now on, ' +
       'for both of you.');
   }

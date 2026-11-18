@@ -182,6 +182,7 @@ function formatDate_(date) {
 
 const DELETE_QUEUE_CACHE_KEY = 'delete_queue';
 const MAX_DELETE_DELAY_SECONDS = 169200; // 47h: Telegram allows deleting for 48h
+const MAX_DELETE_QUEUE = 150; // ~55 bytes each: stays well under the 9 KB Script Property limit
 
 function readDeleteQueue_() {
   const cache = CacheService.getScriptCache();
@@ -204,15 +205,26 @@ function writeDeleteQueue_(queue) {
  * message is already queued, its time is replaced (e.g. an /adjust preview
  * queued for "when it expires" moves to "60s after you finish").
  */
-function scheduleDelete_(chatId, messageId, seconds) {
+function scheduleDelete_(chatId, messageId, seconds, batch) {
   const delay = Math.min(Math.max(0, Number(seconds) || 0), MAX_DELETE_DELAY_SECONDS);
+  let early = [];
   withScriptLock_(function () {
     const queue = readDeleteQueue_().filter(function (item) {
       return !(item.c === String(chatId) && item.m === messageId);
     });
-    queue.push({ c: String(chatId), m: messageId, at: Date.now() + delay * 1000 });
-    writeDeleteQueue_(queue);
+    const item = { c: String(chatId), m: messageId, at: Date.now() + delay * 1000 };
+    if (batch) item.b = 1; // end-of-day batch: deleted once due, never waited for
+    queue.push(item);
+    // The queue is one Script Property (max 9 KB). When it is full, the budget messages due first are deleted now.
+    if (queue.length > MAX_DELETE_QUEUE) {
+      early = queue.filter(function (q) { return q.b; }).sort(function (a, b) { return a.at - b.at; })
+        .slice(0, queue.length - MAX_DELETE_QUEUE);
+      writeDeleteQueue_(queue.filter(function (q) { return early.indexOf(q) === -1; }).slice(-MAX_DELETE_QUEUE));
+    } else {
+      writeDeleteQueue_(queue);
+    }
   });
+  early.forEach(function (q) { deleteMessage(q.c, q.m); });
 }
 
 /**
@@ -222,6 +234,9 @@ function scheduleDelete_(chatId, messageId, seconds) {
  * time before deleting it, so a 60s delete happens at ~60s, not up to 2 min.
  */
 function cleanupMessages() {
+  // Another run is doing a closing and holds the lock for a while: don't queue up behind it.
+  const closing = activeClosingJob_();
+  if (closing && closing.state === 'running') return;
   // A monthly closing waiting to run (Closing.gs) — exits at once when there is none.
   try {
     processClosingJob_();
@@ -240,10 +255,12 @@ function cleanupMessages() {
   withScriptLock_(function () {
     const queue = readDeleteQueue_();
     if (queue.length === 0) return;
-    const horizon = Date.now() + 60000;
-    due = queue.filter(function (item) { return item.at <= horizon; });
+    // On-demand replies (/saldo, /budget) due within 60s are waited for; end-of-day batch items only once due.
+    const now = Date.now(), horizon = now + 60000;
+    const isDue = function (item) { return item.b ? item.at <= now : item.at <= horizon; };
+    due = queue.filter(isDue);
     if (due.length > 0) {
-      writeDeleteQueue_(queue.filter(function (item) { return item.at > horizon; }));
+      writeDeleteQueue_(queue.filter(function (item) { return !isDue(item); }));
     }
   });
 

@@ -74,6 +74,8 @@ function stepDebt_(p, ctx) {
   if (!ctx.debts) ctx.debts = loadDebts_(ctx.ss);
   const d = p.d;
   p.awaitText = null;
+  const notice = d.notice; // e.g. "amounts changed since the preview" (shown once, on the preview)
+  d.notice = null;
 
   if (d.amountOptions) {
     const rows = chunk_(d.amountOptions.map(function (v, i) { return btn_(p, formatRp_(v), 'dam', i); }), 2);
@@ -135,6 +137,7 @@ function stepDebt_(p, ctx) {
       return askDebtCategory_(p, ctx, d.overpay === 'income' ? 'Income' : 'Expense',
         'Which category is the extra ' + formatRp_(d.amount - owed) + '?', 'xc');
     }
+    d.shownExtra = Math.max(0, d.amount - owed); // the extra the preview shows; saveDebt_ re-checks it
     // Paying back a hutang is money out, so it counts as an Expense (owner, 2026-11-02). A split-bill hutang
     // already has its category (e.g. Food); otherwise ask. The preview has a 📂 Category button to change it.
     if (recs[0].type === 'Hutang' && !d.category) {
@@ -151,7 +154,7 @@ function stepDebt_(p, ctx) {
   if (d.kind !== 'convert' && !findWallet_(everydayWallets_(ctx.wallets, ctx.investmentGroups), d.wallet)) {
     return askDebtWallet_(p, ctx);
   }
-  showStep_(p, buildDebtPreview_(p, ctx), debtPreviewButtons_(p));
+  showStep_(p, buildDebtPreview_(p, ctx, notice ? notice + '\n\nSave?' : undefined), debtPreviewButtons_(p));
 }
 
 function findDebtById_(debts, id) {
@@ -171,7 +174,7 @@ function resolveDebtTarget_(p, ctx) {
   const debts = ctx.debts;
   if (d.recordIds && d.recordIds.length) {
     const recs = d.recordIds.map(function (id) { return findDebtById_(debts, id); });
-    if (recs.every(function (r) { return r && isOpenDebt_(r); })) {
+    if (recs.every(function (r) { return r && isOpenDebt_(r) && r.type === recs[0].type; })) {
       d.recordId = recs[0].id;
       d.recordType = recs[0].type;
       return true;
@@ -201,6 +204,13 @@ function resolveDebtTarget_(p, ctx) {
     pool = pool.filter(function (x) {
       return names.indexOf(x.name.toLowerCase()) !== -1 && childrenOf_(debts, x.id).length === 0;
     });
+  }
+  // A payment is never spread over both hutang and piutang: ask which one.
+  if (d.kind === 'pay' && !d.debtType && pool.some(function (x) { return x.type !== pool[0].type; })) {
+    const sum = function (t) { return pool.filter(function (x) { return x.type === t; }).reduce(function (s, x) { return s + x.remaining; }, 0); };
+    return showStep_(p, escapeHtml_(d.name || '') + ' has both open piutang and hutang. Which is this payment for?',
+      [[btn_(p, '💵 Piutang · ' + formatRp_(sum('Piutang')), 'dt', 'Piutang')],
+       [btn_(p, '💸 Hutang · ' + formatRp_(sum('Hutang')), 'dt', 'Hutang')], cancelRow_(p)]);
   }
   if (pool.length === 1 || (pool.length > 1 && d.kind === 'pay')) {
     d.recordIds = sortForPayment_(pool).map(function (x) { return x.id; });
@@ -475,6 +485,7 @@ function debtCallback_(p, action, arg, user) {
       break;
     }
     case 'op': d.overpay = arg; break;
+    case 'dt': d.debtType = arg === 'Hutang' ? 'Hutang' : 'Piutang'; d.recordIds = null; break; // pay: hutang or piutang
     case 'newrec': // "No open record — create a new one"
       Object.assign(d, { kind: 'new', group: false, recordId: null, recordIds: null });
       break;
@@ -597,6 +608,8 @@ function saveDebt_(p, ctx, user) {
   const newContacts = [];
   let text = '';
   let touchedIds = null; // records a payment actually reached
+  let recheck = false;    // amounts changed since the preview: nothing written, preview shown again
+  let fresh = null;       // debt records read inside the lock
 
   withScriptLock_(function () {
     if (d.kind === 'new' && !d.group) {
@@ -638,7 +651,7 @@ function saveDebt_(p, ctx, user) {
       text = '✅ Saved split bill (' + link + '): ' + (d.me > 0 ? 'your share ' + formatRp_(d.me) + ' + ' : '') +
         created.length + ' piutang (' + created.join(', ') + ').';
     } else {
-      const all = loadDebts_(ss);
+      const all = fresh = loadDebts_(ss);
       const recs = d.recordIds.map(function (id) { return findDebtById_(all, id); });
       if (recs.some(function (r) { return !r || !isOpenDebt_(r); })) {
         text = '⚠️ ' + escapeHtml_(d.recordIds.join(', ')) + ' is no longer open. Nothing was saved.';
@@ -648,6 +661,12 @@ function saveDebt_(p, ctx, user) {
       const piutang = rec.type === 'Piutang';
       if (d.kind === 'pay') {
         const plan = allocatePayment_(recs, d.amount); // nearest due date first, then the oldest
+        // Save only what the preview showed: same extra, an extra with a known destination, one debt type.
+        if (plan.extra !== (d.shownExtra || 0) || (plan.extra > 0 && d.overpay !== 'flip' && !d.extraCategory) ||
+            recs.some(function (r) { return r.type !== rec.type; })) {
+          recheck = true;
+          return;
+        }
         const spends = piutang ? [] : plan.parts; // a hutang payment is money out → also my Expense
         const link = plan.parts.length > 1 || plan.extra > 0 || spends.length ? nextId_(trxSheet, 'Link ID', 'LNK') : '';
         plan.parts.forEach(function (x) {
@@ -679,19 +698,25 @@ function saveDebt_(p, ctx, user) {
           note: d.note || 'Added to ' + rec.id }, '');
         text = '✅ Added ' + formatRp_(d.amount) + ' to <b>' + rec.id + '</b>.';
       } else {
+        // Checked before anything is written, so a missing column can't leave half a conversion.
+        if (getHeaderMap_(debtSheet)['converted trx'] === undefined) {
+          text = '⚠️ The Hutang_Piutang tab has no "Converted Trx" column. Nothing was saved. ' +
+            'Please run <code>upgradeSheets</code> from the Apps Script editor, then try again.';
+          return;
+        }
         const targets = convertTargetsOf_(all, recs);
-        const convCol = getHeaderMap_(debtSheet)['converted trx'];
         const link = targets.length > 1 ? nextId_(trxSheet, 'Link ID', 'LNK') : '';
+        const convById = {};
         targets.forEach(function (x) {
-          const id = trx({ type: piutang ? 'Expense' : 'Income', direction: 'None', amount: x.remaining, debtId: x.id,
+          convById[x.id] = trx({ type: piutang ? 'Expense' : 'Income', direction: 'None', amount: x.remaining, debtId: x.id,
             category: d.category, categoryHow: d.categoryHow || 'chosen', wallet: x.wallet || rec.wallet,
             note: 'Converted ' + x.id + ' (' + x.name + ')' }, link);
-          debtSheet.getRange(x.row, convCol + 1).setValue(id);
         });
         // A converted group parent lists its sub-records' conversions too.
         recs.forEach(function (r) {
-          if (targets.indexOf(r) === -1) debtSheet.getRange(r.row, convCol + 1).setValue(saved.join(', '));
+          if (targets.indexOf(r) === -1) convById[r.id] = saved.join(', ');
         });
+        setColumnById_(debtSheet, 'Debt ID', 'Converted Trx', convById); // one batched write
         text = '✅ <b>' + recs.map(function (r) { return r.id; }).join(', ') + '</b> converted → ' + saved.join(', ') +
           ' (' + (piutang ? 'Expense' : 'Income') + ', ' + escapeHtml_(d.category) + ', ' +
           formatRp_(entries.reduce(function (s, e) { return s + e.amount; }, 0)) + ').';
@@ -699,6 +724,11 @@ function saveDebt_(p, ctx, user) {
     }
   });
 
+  if (recheck) { // nothing was written: show the preview again with today's amounts
+    ctx.debts = fresh;
+    d.notice = '⚠️ Amounts changed since the preview — please check again.';
+    return stepDebt_(p, ctx);
+  }
   newContacts.forEach(function (n) { addContact_(ss, n, []); });
   if (newContacts.length) text += '\n👤 Added to Contacts: ' + escapeHtml_(newContacts.join(', ')) + '.';
   if ((d.kind === 'pay' || d.kind === 'add') && d.recordIds) {
@@ -744,6 +774,12 @@ function debtUndoPlan_(ss, groupRows, allRows) {
     return { blocked: 'That entry created ' + creations.join(', ') + ', which already has later entries (' +
       later.map(function (r) { return r['trx id']; }).join(', ') + '). Undo those first.' };
   }
+  if (reopen.length) { // checked before any Transactions row is deleted
+    const debtSheet = ss.getSheetByName(TAB.DEBTS);
+    if (debtSheet === null || getHeaderMap_(debtSheet)['converted trx'] === undefined) {
+      return { blocked: 'The Hutang_Piutang tab has no "Converted Trx" column. Please run upgradeSheets from the Apps Script editor first.' };
+    }
+  }
   if (creations.length === 0) return { deleteDebts: [], reopen: reopen };
   // Group parents go too when all of their sub-records are deleted.
   const debts = loadDebts_(ss);
@@ -764,15 +800,13 @@ function applyDebtUndo_(ss, plan) {
   withScriptLock_(function () {
     const sheet = ss.getSheetByName(TAB.DEBTS);
     const debts = loadDebts_(ss);
-    const convCol = getHeaderMap_(sheet)['converted trx'];
+    const clear = {};
     plan.reopen.forEach(function (id) {
       const rec = findDebtById_(debts, id);
-      if (rec) sheet.getRange(rec.row, convCol + 1).setValue('');
-      if (rec && rec.parent) {
-        const parent = findDebtById_(debts, rec.parent);
-        if (parent) sheet.getRange(parent.row, convCol + 1).setValue('');
-      }
+      if (rec) clear[rec.id] = '';
+      if (rec && rec.parent) clear[rec.parent] = '';
     });
+    if (Object.keys(clear).length) setColumnById_(sheet, 'Debt ID', 'Converted Trx', clear); // one batched write
     debts.filter(function (x) { return plan.deleteDebts.indexOf(x.id) !== -1; })
       .sort(function (a, b) { return b.row - a.row; })
       .forEach(function (x) { sheet.deleteRow(x.row); });

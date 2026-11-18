@@ -91,6 +91,7 @@ function addKeywordToCategory_(ss, categoryName, keyword) {
     const col = getHeaderMap_(sheet)['keywords'];
     const kw = normalizeForMatch_(keyword);
     const removedFrom = [];
+    const updates = []; // [{ row, text }], written in one setValues below
     loadCategories_(ss).forEach(function (c) {
       const has = c.keywords.some(function (k) { return normalizeForMatch_(k) === kw; });
       let list = c.keywords;
@@ -103,8 +104,17 @@ function addKeywordToCategory_(ss, categoryName, keyword) {
       } else {
         return;
       }
-      sheet.getRange(c.row, col + 1).setValue(list.join(', '));
+      updates.push({ row: c.row, text: list.join(', ') });
     });
+    if (updates.length) {
+      // One read + one write of the Keywords cells between the first and last changed row.
+      const first = Math.min.apply(null, updates.map(function (u) { return u.row; }));
+      const last = Math.max.apply(null, updates.map(function (u) { return u.row; }));
+      const range = sheet.getRange(first, col + 1, last - first + 1, 1);
+      const values = range.getValues();
+      updates.forEach(function (u) { values[u.row - first][0] = u.text; });
+      range.setValues(values);
+    }
     return removedFrom;
   });
 }

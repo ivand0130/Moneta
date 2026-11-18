@@ -21,8 +21,9 @@ const FMT = {
 };
 
 const HEADER_BG = '#dbe5f1';
-// Wallet Types whose balance comes from Investment_Details (the old "Investment" counts as Others).
-const INV_WALLET_TYPE_RE = '^(Emas|Saham|Others|Investment)$';
+// Wallet Types whose balance comes from Investment_Details: the same names walletKind_ (Wallets.gs) accepts,
+// any case, spaces ignored (the old "Investment" counts as Others).
+const INV_WALLET_TYPE_RE = '(?i)^\\s*(emas|gold|saham|stocks?|others?|lainnya|investment|investasi)\\s*$';
 const FORMULA_HEADER_BG = '#d9ead3';
 
 /**
@@ -352,6 +353,16 @@ function getSchema_() {
       { h: 'Gain/Loss', fmt: FMT.RP, redIfNegative: true },
       { h: 'Closed At', fmt: FMT.DATETIME },
       { h: 'Archive Link', w: 200 }
+    ] },
+
+    // Written at monthly closing: each category's expense / income of the closed month (the Dashboard's
+    // category trends, because a closed month's Transactions rows move to its archive).
+    { name: T.CATEGORY_HISTORY, columns: [
+      { h: 'Month Key', w: 90 },
+      { h: 'Month', fmt: FMT.TEXT, w: 90 },
+      { h: 'Category', w: 160 },
+      { h: 'Type', w: 90 },
+      { h: 'Amount', fmt: FMT.RP }
     ] },
 
     { name: T.LOGS, columns: [
@@ -1080,12 +1091,13 @@ function upgradeSheets() {
     console.log(ss.getName() + ' → ' + upgradeWalletTypes_(ss));
     console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.DEBTS)); // Carried Paid (Phase 8), before its formulas
     [TAB.INVESTMENTS, TAB.SALES, TAB.INV_SUMMARY, TAB.DEBTS].forEach(function (t) { console.log(ss.getName() + ' → ' + refreshFormulas_(ss, t)); });
-    console.log(ss.getName() + ' → ' + upgradeDashboardCashFlow_(ss));
     console.log(ss.getName() + ' → ' + addWalletGroupOption_(ss, 'Investment Wallet'));
     console.log(ss.getName() + ' → ' + upgradeInputSources_(ss));
     console.log(ss.getName() + ' → ' + upgradeCategoryBudgetColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeDebtColumns_(ss));
     console.log(ss.getName() + ' → ' + upgradeMissingColumns_(ss, TAB.FAVORITES));
+    console.log(ss.getName() + ' → ' + backfillCategoryHistory_(ss));
+    console.log(ss.getName() + ' → ' + rebuildDashboard_(ss));
   });
   upgradeSettings();
   validateSheet();
@@ -1232,12 +1244,8 @@ function fillMainSheetUsers_(ss) {
 }
 
 /**
- * Dashboard: live summary tables (columns T onward, all formulas) and the
- * 7 charts from SPEC Section 18 on the left.
- */
-/**
- * Cash flow of the last 12 months (Dashboard T3:W14). A closed month's rows are gone from Transactions
- * (they are in its archive), so its Income / Expense come from the Monthly Report tab.
+ * Cash flow of the last 12 months (Dashboard T3:W14, newest in row 14). A closed month's rows are gone from
+ * Transactions (they are in its archive), so its Income / Expense come from the Monthly Report tab.
  */
 function dashboardCashFormulas_(r) {
   const X = TAB.TRANSACTIONS, R = TAB.REPORT;
@@ -1250,56 +1258,100 @@ function dashboardCashFormulas_(r) {
         r(R, t) + ',' + r(R, 'Month Key') + ',' + key + '),SUMIFS(' + r(X, 'Amount') + ',' + r(X, 'Type') + ',"' + t + '",' +
         r(X, 'Date') + ',">="&T' + row + ',' + r(X, 'Date') + ',"<"&EDATE(T' + row + ',1)))';
     };
-    out.push(['=EDATE((EOMONTH(TODAY(),-1)+1),' + (i - 11) + ')', sum('Income'), sum('Expense'), '=U' + row + '-V' + row]);
+    out.push(['=EDATE((EOMONTH(TODAY(),-1)+1),' + (i - 11) + ')', sum('Income'), sum('Expense'), '=U' + row + '-V' + row,
+      '=IF(N(U' + row + ')=0,,W' + row + '/U' + row + ')']);
   }
   return out;
 }
 
-/** Phase 8: the Dashboard cash flow reads closed months from the Monthly Report tab. */
-function upgradeDashboardCashFlow_(ss) {
-  const sheet = ss.getSheetByName(TAB.DASHBOARD);
-  if (sheet === null) return 'Dashboard: tab not found';
+/**
+ * Rebuilds the Dashboard tab of an existing sheet (it holds only formulas and charts, never data), so a
+ * new Dashboard design reaches the main sheet and the template. Run by upgradeSheets.
+ */
+function rebuildDashboard_(ss) {
+  let sheet = ss.getSheetByName(TAB.DASHBOARD);
+  if (sheet === null) sheet = ss.insertSheet(TAB.DASHBOARD, 0);
   const locale = ss.getSpreadsheetLocale();
-  ss.setSpreadsheetLocale('en_US');
+  ss.setSpreadsheetLocale('en_US'); // formulas use English syntax
   try {
-    const want = dashboardCashFormulas_(makeSheetResolver_(ss));
-    if (sheet.getRange('U3').getFormula() === want[0][1]) return 'Dashboard: cash flow up to date';
-    sheet.getRange('T3:W14').setFormulas(want); // the Dashboard protection is warning-only, so the script can write
+    sheet.getCharts().forEach(function (c) { sheet.removeChart(c); });
+    sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET).forEach(function (p) { p.remove(); });
+    sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(function (p) { p.remove(); });
+    sheet.clearConditionalFormatRules();
+    sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).breakApart();
+    sheet.clear();
+    buildDashboard_(ss, sheet, makeSheetResolver_(ss));
     SpreadsheetApp.flush();
-    return 'Dashboard: cash flow now reads closed months from Monthly Report';
   } finally {
     ss.setSpreadsheetLocale(locale);
   }
+  return 'Dashboard rebuilt';
 }
 
+/**
+ * The Dashboard (owner's request, 2026-11-18): a readable summary on the left — this month, where the
+ * money is, spending pace, budget health, category trends, top expenses, who logged what, debts coming
+ * up — and the charts below it. Everything is a live formula over the other tabs; the helper tables the
+ * charts and summaries use are in columns T onward. Expense / income use the shared rule (Type =
+ * Expense / Income, like countsAsExpense_ / countsAsIncome_); closed months come from Monthly Report and
+ * Category_History. The sheet must be en_US while this runs.
+ */
 function buildDashboard_(ss, sheet, r) {
-  const X = TAB.TRANSACTIONS, W = TAB.WALLETS, C = TAB.CATEGORIES, I = TAB.INVESTMENTS, R = TAB.REPORT;
+  const X = TAB.TRANSACTIONS, W = TAB.WALLETS, C = TAB.CATEGORIES, I = TAB.INVESTMENTS, R = TAB.REPORT, D = TAB.DEBTS,
+    H = TAB.CATEGORY_HISTORY;
   const amt = r(X, 'Amount'), type = r(X, 'Type'), date = r(X, 'Date'), cat = r(X, 'Category');
-  const catName = r(C, 'Category'), catType = r(C, 'Type');
-  const monthStart = '(EOMONTH(TODAY(),-1)+1)', nextMonthStart = '(EOMONTH(TODAY(),0)+1)';
+  const catName = r(C, 'Category'), catType = r(C, 'Type'), budget = r(C, 'Monthly Budget');
+  const ms = '(EOMONTH(TODAY(),-1)+1)', nx = '(EOMONTH(TODAY(),0)+1)';
+  const days = 'DAY(EOMONTH(TODAY(),0))', dayNow = 'DAY(TODAY())';
+  const thisMonth = ',' + date + ',">="&' + ms + ',' + date + ',"<"&' + nx;
+  const RP = FMT.RP, PCT0 = '0%';
+  const UPDOWN_PCT = '▲ 0%;▼ 0%;"="';
+  const UPDOWN_RP = '▲ "Rp"#,##0;▼ "Rp"#,##0;"="';
 
-  sheet.getRange('A1').setValue('MonetaBot Dashboard').setFontSize(16).setFontWeight('bold');
-  sheet.getRange('T1').setValue('Chart data: formulas, do not edit').setFontStyle('italic');
+  if (sheet.getMaxColumns() < 45) sheet.insertColumnsAfter(sheet.getMaxColumns(), 45 - sheet.getMaxColumns());
+  if (sheet.getMaxRows() < 160) sheet.insertRowsAfter(sheet.getMaxRows(), 160 - sheet.getMaxRows());
+  sheet.setHiddenGridlines(true);
+  sheet.setColumnWidth(1, 20);
+  for (let c = 2; c <= 17; c++) sheet.setColumnWidth(c, 115);
+  sheet.setColumnWidth(10, 30); // gap between the left and right tables
 
-  // Cash flow, last 12 months (T:W)
-  sheet.getRange('T2:W2').setValues([['Month', 'Income', 'Expense', 'Net']]);
-  sheet.getRange('T3:W14').setFormulas(dashboardCashFormulas_(r));
+  const section = function (a1, text) {
+    sheet.getRange(a1).setValue(text).setFontSize(12).setFontWeight('bold').setFontColor('#1f3864');
+  };
+  const header = function (a1, values) {
+    sheet.getRange(a1).setValues([values]).setFontWeight('bold').setBackground(HEADER_BG);
+  };
+  const labels = function (a1, values) {
+    sheet.getRange(a1).setValues([values]).setFontColor('#666666').setFontSize(9);
+  };
+  const values = function (a1) { return sheet.getRange(a1).setFontSize(14).setFontWeight('bold'); };
+
+  sheet.getRange('B1').setValue('MonetaBot Dashboard').setFontSize(18).setFontWeight('bold');
+  sheet.getRange('B2').setFormula('="Live from the sheet · today is "&TEXT(TODAY(),"d mmm yyyy")').setFontColor('#666666');
+
+  // ---- Helper tables (columns T onward; formulas only) -------------------------------------------------
+  sheet.getRange('T1').setValue('Chart and summary data: formulas, do not edit').setFontStyle('italic');
+
+  // Cash flow + savings rate, last 12 months (T:X; row 14 = this month, row 13 = last month)
+  sheet.getRange('T2:X2').setValues([['Month', 'Income', 'Expense', 'Net', 'Savings Rate']]);
+  sheet.getRange('T3:X14').setFormulas(dashboardCashFormulas_(r));
   sheet.getRange('T3:T14').setNumberFormat(FMT.MONTH);
-  sheet.getRange('U3:W14').setNumberFormat(FMT.RP);
+  sheet.getRange('U3:W14').setNumberFormat(RP);
+  sheet.getRange('X3:X14').setNumberFormat(PCT0);
 
   // Expenses by category, this month (Y:Z)
   sheet.getRange('Y2:Z2').setValues([['Category', 'Expense This Month']]);
   sheet.getRange('Y3').setFormula('=IFERROR(FILTER(' + catName + ',' + catType + '="Expense"))');
   sheet.getRange('Z3').setFormula('=MAP(Y3:Y60,LAMBDA(c,IF(c="",,SUMIFS(' + amt + ',' + type + ',"Expense",' +
-    cat + ',c,' + date + ',">="&' + monthStart + ',' + date + ',"<"&' + nextMonthStart + '))))');
-  sheet.getRange('Z3:Z60').setNumberFormat(FMT.RP);
+    cat + ',c' + thisMonth + '))))');
+  sheet.getRange('Z3:Z60').setNumberFormat(RP);
 
   // Balance by wallet group, cash wallets only (AB:AC)
   sheet.getRange('AB2:AC2').setValues([['Wallet Group', 'Balance']]);
   const groupFormulas = dashboardGroupFormulas_(r);
   sheet.getRange('AB3').setFormula(groupFormulas.groups);
   sheet.getRange('AC3').setFormula(groupFormulas.balances);
-  sheet.getRange('AC3:AC30').setNumberFormat(FMT.RP);
+  sheet.getRange('AC3:AC30').setNumberFormat(RP);
 
   // Investments by category (AE:AG)
   sheet.getRange('AE2:AG2').setValues([['Investment Category', 'Current Value', 'Gain/Loss']]);
@@ -1308,31 +1360,217 @@ function buildDashboard_(ss, sheet, r) {
     r(I, 'Investment Category') + ',c))))');
   sheet.getRange('AG3').setFormula('=MAP(AE3:AE30,LAMBDA(c,IF(c="",,SUMIFS(' + r(I, 'Gain/Loss (Rp)') + ',' +
     r(I, 'Investment Category') + ',c))))');
-  sheet.getRange('AF3:AG30').setNumberFormat(FMT.RP);
+  sheet.getRange('AF3:AG30').setNumberFormat(RP);
 
-  sheet.getRange('T2:AG2').setFontWeight('bold');
+  // Expense per category, last 6 months (AI:AO; AO = this month). Closed months from Category_History.
+  sheet.getRange('AI2').setValue('Category');
+  const monthCols = ['AJ', 'AK', 'AL', 'AM', 'AN', 'AO'];
+  sheet.getRange('AJ2:AO2').setFormulas([monthCols.map(function (c, i) { return '=EDATE(' + ms + ',' + (i - 5) + ')'; })])
+    .setNumberFormat(FMT.MONTH);
+  sheet.getRange('AI3').setFormula('=IFERROR(FILTER(' + catName + ',' + catType + '="Expense"))');
+  sheet.getRange('AJ3:AO3').setFormulas([monthCols.map(function (c) {
+    const m = c + '$2', key = 'YEAR(' + m + ')*100+MONTH(' + m + ')';
+    return '=MAP($AI$3:$AI$60,LAMBDA(c,IF(c="",,IF(COUNTIFS(' + r(R, 'Month Key') + ',' + key + ',' + r(R, 'Status') +
+      ',"Closed")>0,SUMIFS(' + r(H, 'Amount') + ',' + r(H, 'Month Key') + ',' + key + ',' + r(H, 'Category') + ',c,' +
+      r(H, 'Type') + ',"Expense"),SUMIFS(' + amt + ',' + type + ',"Expense",' + cat + ',c,' + date + ',">="&' + m + ',' +
+      date + ',"<"&EDATE(' + m + ',1))))))';
+  })]);
+  sheet.getRange('AJ3:AO60').setNumberFormat(RP);
+  sheet.getRange('T2:AO2').setFontWeight('bold');
 
-  // Charts: two columns (A and I), 16 rows apart.
-  const addChart = function (chartType, ranges, title, row, col) {
+  // ---- 📅 This month ----------------------------------------------------------------------------------
+  section('B4', '📅 This month');
+  labels('B5:F5', ['Income', 'Expense', 'Net saved', 'Savings rate', 'Spent per day']);
+  values('B6:F6').setFormulas([['=U14', '=V14', '=W14', '=IF(N(U14)=0,"—",W14/U14)', '=V14/' + dayNow]]);
+  sheet.getRange('B6:D6').setNumberFormat(RP);
+  sheet.getRange('E6').setNumberFormat(PCT0);
+  sheet.getRange('F6').setNumberFormat(RP);
+  sheet.getRange('B7:F7').setFormulas([['=IF(N(U13)=0,"",U14/U13-1)', '=IF(N(V13)=0,"",V14/V13-1)', '=W14-W13',
+    '=IF(OR(N(U14)=0,N(U13)=0),"",(X14-X13)*100)', '=IF(N(V13)=0,"",(V14/' + dayNow + ')/(V13/DAY(EOMONTH(TODAY(),-1)))-1)']])
+    .setFontColor('#666666').setFontSize(9);
+  sheet.getRange('B7:C7').setNumberFormat(UPDOWN_PCT);
+  sheet.getRange('D7').setNumberFormat(UPDOWN_RP);
+  sheet.getRange('E7').setNumberFormat('▲ 0" pts";▼ 0" pts";"="');
+  sheet.getRange('F7').setNumberFormat(UPDOWN_PCT);
+  sheet.getRange('G7').setValue('← vs last month (whole month; spent per day is a fair comparison)').setFontColor('#999999').setFontSize(9);
+
+  // ---- 🏦 Where your money is -------------------------------------------------------------------------
+  const wType = r(W, 'Wallet Type');
+  const cashMask = '(REGEXMATCH(' + wType + '&"","' + INV_WALLET_TYPE_RE + '")=FALSE)*(' + r(W, 'Wallet') + '<>"")';
+  // Records with sub-records (group piutang) are counted through their sub-records only, like /report.
+  const debtLeft = function (t) {
+    const rem = r(D, 'Remaining');
+    return '=SUMPRODUCT((' + r(D, 'Type') + '="' + t + '")*(COUNTIF(' + r(D, 'Parent ID') + ',' + r(D, 'Debt ID') + '&"")=0)*(' +
+      r(D, 'Debt ID') + '<>""),IF(ISNUMBER(' + rem + '),IF(' + rem + '>0,' + rem + ',0),0))';
+  };
+  const bal = r(W, 'Current Balance');
+  section('B9', '🏦 Where your money is');
+  labels('B10:F10', ['Cash (all wallets)', 'Investments', 'Piutang (owed to you)', 'Hutang (you owe)', 'Net worth']);
+  values('B11:F11').setFormulas([[
+    '=SUMPRODUCT(' + cashMask + ',IF(ISNUMBER(' + bal + '),' + bal + ',0))',
+    '=SUM(' + r(I, 'Current Value') + ')',
+    debtLeft('Piutang'), debtLeft('Hutang'),
+    '=B11+C11+D11-E11']]).setNumberFormat(RP);
+  sheet.getRange('F12').setFormula('=IFERROR(F11-INDEX(SORT(FILTER({' + r(R, 'Month Key') + ',' + r(R, 'Net Worth') + '},' +
+    r(R, 'Status') + '="Closed"),1,FALSE),1,2),"")').setNumberFormat('▲ "Rp"#,##0" since last closing";▼ "Rp"#,##0" since last closing";"="')
+    .setFontColor('#666666').setFontSize(9);
+  sheet.getRange('B12').setValue('Net worth = cash + investments + piutang − hutang (same as /report)').setFontColor('#999999').setFontSize(9);
+
+  // ---- ⏱ Spending pace --------------------------------------------------------------------------------
+  const budgetTotal = 'SUMIFS(' + budget + ',' + catType + ',"Expense",' + budget + ',">0")';
+  const budgetSpent = 'SUMIFS(' + r(C, 'Spent') + ',' + catType + ',"Expense",' + budget + ',">0")';
+  const projBudgeted = '(' + budgetSpent + '/' + dayNow + '*' + days + ')';
+  section('B14', '⏱ Spending pace');
+  labels('B15:F15', ['Day of month', 'Spent so far', 'Month-end at this pace', 'Total budget', 'Budgeted spent so far']);
+  values('B16:F16').setFormulas([['=' + dayNow + '&" of "&' + days, '=V14', '=V14/' + dayNow + '*' + days,
+    '=' + budgetTotal, '=' + budgetSpent]]);
+  sheet.getRange('C16:F16').setNumberFormat(RP);
+  sheet.getRange('B17').setFormula('=IF(' + budgetTotal + '=0,"Add a Monthly Budget to your expense categories ' +
+    '(Categories tab) to see whether you are on track.",IF(' + projBudgeted + '<=' + budgetTotal + ',"✅ On track. Expected left ' +
+    'in your budgets at month end:","⚠️ At this pace your budgeted categories go over by:"))').setFontWeight('bold').setWrap(true);
+  sheet.getRange('B17:D17').merge();
+  sheet.getRange('E17').setFormula('=IF(' + budgetTotal + '=0,"",ABS(' + budgetTotal + '-' + projBudgeted + '))')
+    .setNumberFormat(RP).setFontWeight('bold');
+  sheet.getRange('F17').setValue('(fixed costs paid early in the month make the pace look high)').setFontColor('#999999').setFontSize(9);
+
+  // ---- 🎯 Budget health (B:I) -------------------------------------------------------------------------
+  section('B19', '🎯 Budget health');
+  header('B20:I20', ['Category', 'Budget', 'Spent', '% Used', 'Should Be', 'Remaining', 'Status', 'Progress']);
+  sheet.getRange('B21').setFormula('=IFERROR(FILTER(' + catName + ',' + catType + '="Expense",ISNUMBER(' + budget + '),' +
+    budget + '>0),"No budgets yet: add a Monthly Budget in the Categories tab")');
+  sheet.getRange('C21:I21').setFormulas([[
+    '=MAP(B21:B45,LAMBDA(c,IF(OR(c="",LEFT(c,3)="No "),,SUMIFS(' + budget + ',' + catName + ',c))))',
+    '=MAP(B21:B45,LAMBDA(c,IF(OR(c="",LEFT(c,3)="No "),,SUMIFS(' + r(C, 'Spent') + ',' + catName + ',c))))',
+    '=MAP(C21:C45,D21:D45,LAMBDA(b,s,IF(N(b)=0,,s/b)))',
+    '=MAP(C21:C45,LAMBDA(b,IF(N(b)=0,,' + dayNow + '/' + days + ')))',
+    '=MAP(C21:C45,D21:D45,LAMBDA(b,s,IF(N(b)=0,,b-s)))',
+    '=MAP(E21:E45,F21:F45,LAMBDA(u,x,IF(u="",,IF(u>1,"🔴 Over",IF(u>x+0.1,"⚠️ Too fast","✅ On track")))))',
+    '=MAP(E21:E45,LAMBDA(u,IF(u="",,REPT("█",MIN(10,ROUND(u*10)))&REPT("░",MAX(0,10-ROUND(u*10))))))']]);
+  sheet.getRange('C21:D45').setNumberFormat(RP);
+  sheet.getRange('E21:F45').setNumberFormat(PCT0);
+  sheet.getRange('G21:G45').setNumberFormat(RP);
+  sheet.getRange('I21:I45').setFontFamily('Courier New').setFontColor('#5b8def');
+  sheet.getRange('B46').setValue('Should Be = how much of the budget would be used by today at an even pace.').setFontColor('#999999').setFontSize(9);
+
+  // ---- 📈 Category trends (K:P) ------------------------------------------------------------------------
+  section('K19', '📈 Category trends (expense)');
+  header('K20:P20', ['Category', 'This Month', 'Last Month', 'Usual (3-mo avg)', '% of Usual', 'Last 6 Months']);
+  sheet.getRange('K21').setFormula('=IFERROR(ARRAY_CONSTRAIN(SORT(FILTER({AI3:AI60,AO3:AO60,AN3:AN60,(AK3:AK60+AL3:AL60+AM3:AM60)/3},' +
+    'AI3:AI60<>"",(AJ3:AJ60+AK3:AK60+AL3:AL60+AM3:AM60+AN3:AN60+AO3:AO60)>0),2,FALSE),25,4),"No expenses in the last 6 months")');
+  sheet.getRange('O21').setFormula('=MAP(K21:K45,L21:L45,N21:N45,LAMBDA(c,t,a,IF(OR(c="",N(a)=0),,t/a)))');
+  const spark = [];
+  for (let row = 21; row <= 45; row++) {
+    spark.push(['=IF(N(L' + row + ')+N(M' + row + ')+N(N' + row + ')=0,"",SPARKLINE(FILTER($AJ$3:$AO$60,$AI$3:$AI$60=K' + row +
+      '),{"charttype","column";"color","#5b8def"}))']);
+  }
+  sheet.getRange('P21:P45').setFormulas(spark);
+  sheet.getRange('L21:N45').setNumberFormat(RP);
+  sheet.getRange('O21:O45').setNumberFormat(PCT0);
+  sheet.getRange('K46').setValue('Usual = average of the 3 months before last month. This month is still running, so compare % of Usual with how far ' +
+    'into the month we are.').setFontColor('#999999').setFontSize(9);
+
+  // ---- 🔝 Biggest expenses (B:F) and 👥 who logged what (K:M) ----------------------------------------
+  section('B48', '🔝 Biggest expenses this month');
+  header('B49:F49', ['Date', 'Category', 'Note', 'Logged By', 'Amount']);
+  sheet.getRange('B50').setFormula('=IFERROR(SORTN(FILTER({' + date + ',' + cat + ',' + r(X, 'Note') + ',' + r(X, 'Logged By') + ',' + amt +
+    '},' + type + '="Expense",' + date + '>=' + ms + ',' + date + '<' + nx + '),5,0,5,FALSE),"No expenses yet this month")');
+  sheet.getRange('B50:B54').setNumberFormat(FMT.DATE);
+  sheet.getRange('F50:F54').setNumberFormat(RP);
+
+  section('K48', '👥 Expense this month by who logged it');
+  header('K49:M49', ['Logged By', 'Expense', 'Share']);
+  sheet.getRange('K50').setFormula('=IFERROR(SORT(UNIQUE(FILTER(' + r(X, 'Logged By') + ',' + type + '="Expense",' + date + '>=' + ms + ',' +
+    date + '<' + nx + ',' + r(X, 'Logged By') + '<>""))),"—")');
+  sheet.getRange('L50').setFormula('=MAP(K50:K56,LAMBDA(p,IF(OR(p="",p="—"),,SUMIFS(' + amt + ',' + r(X, 'Logged By') + ',p,' + type +
+    ',"Expense"' + thisMonth + '))))');
+  sheet.getRange('M50').setFormula('=MAP(L50:L56,LAMBDA(v,IF(OR(v="",SUM(L50:L56)=0),,v/SUM(L50:L56))))');
+  sheet.getRange('L50:L56').setNumberFormat(RP);
+  sheet.getRange('M50:M56').setNumberFormat(PCT0);
+
+  // ---- 📌 Hutang / piutang due (B:G) -------------------------------------------------------------------
+  section('B58', '📌 Hutang / piutang due in the next 14 days (and overdue)');
+  header('B59:G59', ['Due Date', 'Type', 'Name', 'Debt ID', 'Remaining', 'Days Left']);
+  const due = r(D, 'Due Date'), rem = r(D, 'Remaining');
+  sheet.getRange('B60').setFormula('=IFERROR(ARRAY_CONSTRAIN(SORT(FILTER({' + due + ',' + r(D, 'Type') + ',' + r(D, 'Name') + ',' +
+    r(D, 'Debt ID') + ',' + rem + ',' + due + '-TODAY()},ISNUMBER(' + rem + '),' + rem + '>0,ISNUMBER(' + due + '),' + due +
+    '<=TODAY()+14,COUNTIF(' + r(D, 'Parent ID') + ',' + r(D, 'Debt ID') + '&"")=0),1,TRUE),10,6),"Nothing due in the next 14 days 🎉")');
+  sheet.getRange('B60:B69').setNumberFormat(FMT.DATE);
+  sheet.getRange('F60:F69').setNumberFormat(RP);
+  sheet.getRange('G60:G69').setNumberFormat('0" days";"overdue "0" days";"today"');
+
+  // ---- Colours -------------------------------------------------------------------------------------------
+  const red = '#cc0000', green = '#38761d', orange = '#b45f06';
+  const rule = function () { return SpreadsheetApp.newConditionalFormatRule(); };
+  sheet.setConditionalFormatRules([
+    rule().whenNumberLessThan(0).setFontColor(red).setRanges([sheet.getRange('D6'), sheet.getRange('G21:G45')]).build(),
+    rule().whenNumberGreaterThan(0).setFontColor(green).setRanges([sheet.getRange('D6')]).build(),
+    rule().whenTextContains('🔴').setBackground('#f4cccc').setRanges([sheet.getRange('H21:H45')]).build(),
+    rule().whenTextContains('⚠️').setBackground('#fce5cd').setRanges([sheet.getRange('H21:H45'), sheet.getRange('B17')]).build(),
+    rule().whenTextContains('✅').setBackground('#d9ead3').setRanges([sheet.getRange('H21:H45'), sheet.getRange('B17')]).build(),
+    rule().whenNumberGreaterThan(1).setFontColor(red).setBold(true).setRanges([sheet.getRange('E21:E45'), sheet.getRange('O21:O45')]).build(),
+    rule().whenFormulaSatisfied('=AND(ISNUMBER($O21),$O21>DAY(TODAY())/DAY(EOMONTH(TODAY(),0))+0.15)').setFontColor(orange)
+      .setRanges([sheet.getRange('O21:O45')]).build(),
+    rule().whenNumberLessThan(0).setFontColor(red).setBold(true).setRanges([sheet.getRange('G60:G69')]).build(),
+    rule().whenNumberBetween(0, 3).setFontColor(orange).setRanges([sheet.getRange('G60:G69')]).build()
+  ]);
+  sheet.getRange('B5:F7').setBackground('#f3f6fb');
+  sheet.getRange('B10:F12').setBackground('#f3f6fb');
+  sheet.getRange('B15:F17').setBackground('#f3f6fb');
+
+  // ---- Charts (below the summary, two per row) -----------------------------------------------------------
+  section('B71', '📊 Charts');
+  const addChart = function (chartType, ranges, title, row, col, options) {
     let b = sheet.newChart().setChartType(chartType);
     ranges.forEach(function (a1) { b = b.addRange(ss.getRange(a1)); });
-    sheet.insertChart(b.setNumHeaders(1)
-      .setPosition(row, col, 0, 0)
-      .setOption('title', title)
-      .setOption('width', 600)
-      .setOption('height', 300)
-      .build());
+    b = b.setNumHeaders(1).setPosition(row, col, 0, 0).setOption('title', title).setOption('width', 600).setOption('height', 300);
+    Object.keys(options || {}).forEach(function (k) { b = b.setOption(k, options[k]); });
+    sheet.insertChart(b.build());
   };
   const dash = "'" + TAB.DASHBOARD + "'!";
-  addChart(Charts.ChartType.COLUMN, [dash + 'T2:V14'], 'Monthly cash flow (last 12 months)', 3, 1);
-  addChart(Charts.ChartType.PIE, [dash + 'Y2:Z60'], 'Expenses by category (this month)', 3, 9);
-  addChart(Charts.ChartType.PIE, [dash + 'AB2:AC30'], 'Balance by wallet group', 19, 1);
-  addChart(Charts.ChartType.PIE, [dash + 'AE2:AF30'], 'Investments by category', 19, 9);
-  addChart(Charts.ChartType.LINE, [r(R, 'Month', true), r(R, 'Portfolio Value', true)], 'Portfolio value trend', 35, 1);
-  addChart(Charts.ChartType.COLUMN, [dash + 'AE2:AE30', dash + 'AG2:AG30'], 'Gain/loss per investment category', 35, 9);
-  addChart(Charts.ChartType.LINE, [r(R, 'Month', true), r(R, 'Net Worth', true)], 'Net worth trend', 51, 1);
+  addChart(Charts.ChartType.COLUMN, [dash + 'T2:V14'], 'Monthly cash flow (last 12 months)', 72, 2);
+  addChart(Charts.ChartType.LINE, [dash + 'T2:T14', dash + 'X2:X14'], 'Savings rate (share of income kept)', 72, 9,
+    { 'legend.position': 'none', 'vAxis.format': 'percent' });
+  addChart(Charts.ChartType.PIE, [dash + 'Y2:Z60'], 'Expenses by category (this month)', 88, 2);
+  addChart(Charts.ChartType.BAR, [dash + 'B20:B45', dash + 'C20:D45'], 'Budget vs spent (this month)', 88, 9);
+  addChart(Charts.ChartType.PIE, [dash + 'AB2:AC30'], 'Balance by wallet group', 104, 2);
+  addChart(Charts.ChartType.PIE, [dash + 'AE2:AF30'], 'Investments by category', 104, 9);
+  addChart(Charts.ChartType.LINE, [r(R, 'Month', true), r(R, 'Portfolio Value', true)], 'Portfolio value trend', 120, 2);
+  addChart(Charts.ChartType.COLUMN, [dash + 'AE2:AE30', dash + 'AG2:AG30'], 'Gain/loss per investment category', 120, 9);
+  addChart(Charts.ChartType.LINE, [r(R, 'Month', true), r(R, 'Net Worth', true)], 'Net worth trend', 136, 2);
 
+  sheet.setFrozenRows(0);
   sheet.protect().setDescription('Dashboard (formulas and charts)').setWarningOnly(true);
+}
+
+/**
+ * Category_History for months closed before it existed: each closed month's expense / income per category,
+ * read from its archive sheet (the Archive Link in Monthly Report). Months it already has are skipped.
+ */
+function backfillCategoryHistory_(ss) {
+  const sheet = ss.getSheetByName(TAB.CATEGORY_HISTORY);
+  if (sheet === null) return 'Category_History: tab not found';
+  const have = {};
+  readTableByHeaders_(sheet, 'Month Key').forEach(function (row) { have[Number(row['month key'])] = true; });
+  const reportRows = loadReportRows_(ss);
+  const done = [], failed = [];
+  Object.keys(reportRows).map(Number).sort().forEach(function (key) {
+    const row = reportRows[key];
+    if (have[key] || String(row['status']).trim().toLowerCase() !== 'closed') return;
+    const ym = monthOfKey_(key);
+    try {
+      const archive = SpreadsheetApp.openById(archiveIdOf_(row));
+      const rows = categoryTotals_(loadTransactions_(archive), new Date(ym.year, ym.month, 1), new Date(ym.year, ym.month + 1, 1));
+      appendRows_(sheet, 'Month Key', rows.map(function (c) {
+        return { 'Month Key': key, 'Month': monthLabel_(ym.year, ym.month, false), 'Category': c.category, 'Type': c.type, 'Amount': c.amount };
+      }));
+      done.push(key);
+    } catch (err) {
+      logError_('backfillCategoryHistory_', err, String(key));
+      failed.push(key);
+    }
+  });
+  return 'Category_History: ' + (done.length ? 'filled ' + done.join(', ') : 'up to date') +
+    (failed.length ? '; archive not readable for ' + failed.join(', ') + ' (see Logs)' : '');
 }
 
 // ---------------------------------------------------------------------------

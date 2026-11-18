@@ -19,6 +19,14 @@ function doPost(e) {
     }
 
     const update = JSON.parse(e.postData.contents);
+    // A monthly closing holds the lock for a while: answer at once instead of waiting for it (and failing).
+    const closing = activeClosingJob_();
+    if (closing) {
+      chatId = getChatId_(update);
+      if (chatId !== null && isAllowedChat_(chatId)) replyClosingBusy_(update, closing);
+      console.log('closing running: asked chat ' + chatId + ' to resend'); // (recordEvent_ would wait for the lock)
+      return ok_();
+    }
     if (isDuplicateUpdate_(update.update_id)) {
       recordEvent_('skipped duplicate update_id ' + update.update_id);
       return ok_();
@@ -152,6 +160,14 @@ function handleText_(message) {
     return;
   }
   if (pw) clearPasswordState_(chatId);
+  // No open prompt, but one was shown recently (or the password is locked): numbers alone are most
+  // likely a password typed too late. Delete it instead of reading it as an amount.
+  if (!pw && isDigitsOnly_(text) && isPasswordGuarded_(chatId)) {
+    deleteMessage(chatId, message.message_id);
+    sendMessage(chatId, '🔒 That looked like a password, so I deleted it. Nothing was saved. ' +
+      'To log an amount, add what it was for, e.g. <code>' + escapeHtml_(text) + ' parkir</code>.');
+    return;
+  }
 
   if (text.charAt(0) === '/') {
     // "/saldo@MyBot spending" → command "/saldo", args "spending"

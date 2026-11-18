@@ -40,6 +40,7 @@ function reminderSlots_() {
 /** The hourly trigger's function. Returns immediately when no slot is due. */
 function runReminders() {
   try {
+    if (activeClosingJob_()) return; // a closing holds the lock; the due reminders go out next hour
     const now = new Date();
     const today = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
     const state = readReminderState_();

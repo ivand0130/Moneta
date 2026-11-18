@@ -304,14 +304,16 @@ function adjustCallback_(p, action, arg, user) {
   if (action === 'aw') { d.wallet = p.opts[Number(arg)]; d.walletChoices = null; }
   if (action === 'y') {
     const ss = openMainSheet_();
-    // Someone may have logged something since the preview: recompute before saving.
-    const w = findWallet_(loadWallets_(ss), d.wallet);
-    if (!w || w.balance !== d.recorded) {
-      return stepAdjust_(p, 'The recorded balance changed since the preview. Please check again.');
-    }
     if (!claimPending_(p)) return;
     const loggedBy = user && user.name ? user.name : p.chatId;
-    const id = withScriptLock_(function () { return writeAdjustment_(ss, d, loggedBy); });
+    const id = withScriptLock_(function () {
+      // Someone may have logged something since the preview: re-read the balance inside the lock, right before writing.
+      const w = findWallet_(loadWallets_(ss), d.wallet);
+      if (!w || w.balance !== d.recorded) return null;
+      return writeAdjustment_(ss, d, loggedBy);
+    });
+    // Changed: nothing saved; show the preview again with the fresh balance (this re-saves the pending item).
+    if (id === null) return stepAdjust_(p, 'The recorded balance changed since the preview. Please check again.');
     return finishAdjust_(p, '✅ Saved as <b>' + id + '</b>: ' + escapeHtml_(d.wallet) + ' adjusted by ' +
       spoiler_(formatRpSigned_(d.diff)) + '.');
   }

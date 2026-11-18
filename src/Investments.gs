@@ -1259,7 +1259,8 @@ function saveSell_(p, ctx, user) {
     const ss = ctx.ss;
     // Re-check against the sheet as it is now.
     const rows = loadInvestments_(ss).filter(function (x) {
-      return x.asset === d.asset && x.holding && (!d.invWallet || x.invWallet === d.invWallet); // only the wallet it is sold from
+      return String(x.asset).trim().toLowerCase() === String(d.asset).trim().toLowerCase() && x.holding && // same match as advanceSell_
+        (!d.invWallet || x.invWallet === d.invWallet); // only the wallet it is sold from
     });
     const alloc = allocateSale_(rows, d.qty, d.picked);
     if (alloc.error) return { error: 'inv_too_much', held: alloc.held };

@@ -3,7 +3,8 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 9 — Final review (next).
+Pre-Phase 9 recheck (2026-11-18): 22 fixes + new Dashboard — built, waiting
+for the owner's test.
 Phase 8, 7, 6, 5, 4, 3, 2B, 2, 1, 0 — DONE (Phase 8 approved by the owner 2026-11-09).
 Next: Phase 9 — Final review.
 
@@ -667,12 +668,61 @@ Still to change in code that is already built:
     in October blocked, /report of the closed month from the archive, failed
     archive check changes nothing (copy trashed), /setsheet, /setarchive
 
+- Pre-Phase 9 recheck (2026-11-18, owner approved all 22 fixes + category trends)
+  - Closing: a hold (CLOSING_HOLD Script Property: month, sheet ID, archive
+    link) is saved just before the first main-sheet write and removed when
+    the writes are done; while it exists for the current main sheet,
+    /closing refuses and explains the fix (/setsheet <archive copy>, which
+    releases it, or clearClosingHold in the editor). The job saves the
+    archive link before writing, so a stop by the 6-minute limit reports it
+  - While a closing is queued/running (activeClosingJob_), doPost answers
+    "closing is running, send again in 2 minutes" without taking the lock;
+    cleanupMessages and runReminders skip that run
+  - Archive copy: each purchase gets its last Price_History price up to the
+    month end (a price typed later doesn't count); the Password value is
+    blanked; Opening Balances written in one batch; closing on the month's
+    last day notes that budgets show Rp0 for the rest of that day
+  - New tab Category_History (Month Key, Month, Category, Type, Amount),
+    written at closing from categoryTotals_ (shared expense/income rule);
+    backfillCategoryHistory_ (in upgradeSheets) fills months closed earlier
+    from their archive sheets
+  - Password guard: for 10 min after a password prompt (and during the
+    15-min lockout) a numbers-only message is deleted, never parsed as an
+    amount
+  - Delete queue: end-of-day budget messages are a batch (b:1) deleted only
+    once due, never waited for; the queue is capped at 150 (the budget
+    messages due first are deleted early)
+  - /report of an earlier month that isn't closed: debts, investments and
+    net worth marked "(as of today)"
+  - Debts: an overpayment / amounts that changed since the preview → nothing
+    saved, preview again; a payment for a name with both hutang and piutang
+    asks which; Converted Trx checked before writing and written in one batch
+    (save and undo). Favorites: [Yes] carries what the reminder showed
+    (amount + hash); different → normal preview. Investments: sell matches
+    asset names case-insensitively. OCR: hutang save re-checks a closed
+    month; split-bill duplicate = same total + people + date (SPEC 10; when
+    someone else paid, only my share + payer are stored, so that is compared)
+  - Parser: "bulan depan" / "tempo tgl N" clamp to the target month's last
+    day. Keywords written in one batch; Logs, contact aliases and the
+    /adjust balance check run under the lock (hasLock() guard: the lock is
+    not re-entrant). Wallet Type regex in the sheet = walletKind_ aliases,
+    any case
+  - Dashboard rebuilt (rebuildDashboard_, run by upgradeSheets; the tab
+    only holds formulas/charts): This month (income, expense, net, savings
+    rate, spent per day, vs last month), Where your money is (cash,
+    investments, piutang, hutang, net worth, change since last closing),
+    Spending pace (projection vs total budget), Budget health table,
+    Category trends (this month, last month, 3-month usual, % of usual,
+    6-month sparkline; closed months from Category_History), Biggest
+    expenses, Expense by who logged it, Hutang/piutang due in 14 days, and
+    9 charts (added savings rate trend and budget vs spent)
+  - Tests: testClosing 16 (month-end price in the archive, Category_History
+    rows), testParser +6 cases, testDebtParser +6 due-date cases
 ## Known issues
 - (Resolved in Phase 4) Conversions are Expense/Income rows with Direction
   None, so every total that counts Type = Expense / Income includes them
 - Price columns use Rp#,##0, so fractional unit prices (e.g. reksadana NAV)
   display rounded (the stored value is exact)
-- Closed-month protection is not built yet (Closing phase)
 - After /undo of the newest rows, the next entry reuses the same IDs
   (TRX/LNK/SAL: nextId_ = highest + 1). Harmless (the old rows are gone)
 - Investments: one source wallet per purchase; a buy paid from two wallets
@@ -698,6 +748,10 @@ Still to change in code that is already built:
   prompt on the due date; tap Skip
 - Phase 8 report ("paid vs skipped") should count Transactions rows by
   Favorite ID (one per Link ID) and Last Skipped in the month
+- Dashboard "Spending pace" is a straight-line projection: fixed costs paid
+  early in the month make it look high at first
+- Split-bill duplicate check when someone else paid compares my share + the
+  payer (the full participant list isn't stored)
 
 ## Notes / decisions made during build
 - Formulas written by script must be written while the sheet locale is

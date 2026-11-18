@@ -228,6 +228,9 @@ function changePct_(now, before) {
 function formatReportText_(r, hide, state, link) {
   const m = function (n) { return money_(n, hide); };
   const signed = function (n) { return n < 0 ? spoiler_('−' + formatRp_(-n), hide) : spoiler_('+' + formatRp_(n), hide); };
+  // An earlier month that isn't closed yet: debts, investments and net worth are today's values, not its month end.
+  const today = new Date();
+  const asOf = state === 'live' && monthKey_(r.year, r.month) < monthKey_(today.getFullYear(), today.getMonth()) ? ' <i>(as of today)</i>' : '';
   const L = [];
   L.push('📊 <b>Report · ' + escapeHtml_(r.label) + '</b> ' + (state === 'closed' ? '🔒 closed' : '<i>(open, so far)</i>'));
   L.push('💵 Income ' + m(r.income) + ' · 🧾 Expense ' + m(r.expense) + ' · Net ' + signed(r.net));
@@ -273,16 +276,16 @@ function formatReportText_(r, hide, state, link) {
       (d.created ? ' · new ' + m(d.created) : '') + (d.paid ? ' · paid ' + m(d.paid) : '') +
       (d.converted ? ' · converted ' + m(d.converted) : '');
   };
-  L.push('', debtLine('🤝', 'Piutang', r.piutang), debtLine('💳', 'Hutang', r.hutang));
+  L.push('', debtLine('🤝', 'Piutang', r.piutang) + asOf, debtLine('💳', 'Hutang', r.hutang) + asOf);
 
   const inv = r.investments;
   if (inv.value || inv.invested || inv.sold) {
-    L.push('', '📈 <b>Investments</b> ' + m(inv.value) + (inv.change !== null ? ' (' + signed(inv.change) + ' vs last month)' : ''));
+    L.push('', '📈 <b>Investments</b> ' + m(inv.value) + (inv.change !== null ? ' (' + signed(inv.change) + ' vs last month)' : '') + asOf);
     L.push('   bought ' + m(inv.invested) + ' · sold ' + m(inv.sold) + ' · unrealized ' + signed(inv.unrealized) +
       ' · realized this month ' + signed(inv.realized));
     inv.categories.forEach(function (c) { L.push('   ' + escapeHtml_(c.name) + ' ' + m(c.value) + ' (' + signed(c.unrealized) + ')'); });
   }
-  L.push('', '🏦 <b>Net worth</b> ' + m(r.netWorth) + ' <i>(cash + investments + piutang − hutang)</i>');
+  L.push('', '🏦 <b>Net worth</b> ' + m(r.netWorth) + ' <i>(cash + investments + piutang − hutang)</i>' + asOf);
 
   if (r.favorites.length) {
     const by = function (s) { return r.favorites.filter(function (f) { return f.status === s; }); };

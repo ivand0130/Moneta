@@ -238,16 +238,41 @@ function appendRowByHeaders_(spreadsheet, tabName, values, keyHeader) {
 
 /**
  * Writes a row to the Logs tab. Returns false (without error) if there is no
- * main sheet or Logs tab.
+ * main sheet or Logs tab. Never throws. Takes the script lock unless this
+ * execution already holds it (withScriptLock_ must never be nested); if the
+ * lock can't be taken, falls back to appendRow so the log isn't lost.
  */
 function writeLogRow_(level, source, message, details) {
-  const ss = openMainSheet_();
-  if (ss === null) return false;
-  return appendRowByHeaders_(ss, TAB.LOGS, {
-    'Timestamp': new Date(),
-    'Level': level,
-    'Source': source,
-    'Message': message,
-    'Details': details === undefined ? '' : (typeof details === 'string' ? details : JSON.stringify(details))
-  });
+  try {
+    const ss = openMainSheet_();
+    if (ss === null) return false;
+    const values = {
+      'Timestamp': new Date(),
+      'Level': level,
+      'Source': source,
+      'Message': message,
+      'Details': details === undefined ? '' : (typeof details === 'string' ? details : JSON.stringify(details))
+    };
+    const write = function () { return appendRowByHeaders_(ss, TAB.LOGS, values); };
+    if (LockService.getScriptLock().hasLock()) return write();
+    try {
+      return withScriptLock_(write);
+    } catch (lockErr) {
+      // Lock busy (or the locked write failed): appendRow is atomic, so use it instead.
+      const sheet = ss.getSheetByName(TAB.LOGS);
+      if (sheet === null) return false;
+      const map = getHeaderMap_(sheet);
+      const row = [];
+      Object.keys(values).forEach(function (h) {
+        const col = map[h.toLowerCase()];
+        if (col !== undefined) row[col] = values[h];
+      });
+      for (let i = 0; i < row.length; i++) if (row[i] === undefined) row[i] = '';
+      sheet.appendRow(row);
+      return true;
+    }
+  } catch (err) {
+    console.error('writeLogRow_ failed: ' + err + ' | ' + level + ' ' + source + ': ' + message);
+    return false;
+  }
 }

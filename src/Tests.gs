@@ -226,6 +226,12 @@ function testParser() {
     ['50rb makan 5 okt', { date: '2025-10-5' }],
     ['50rb makan 2 hari lalu', { date: '2026-9-23', note: 'makan' }],
     ['50rb makan 3 days ago', { date: '2026-9-22' }],
+    ['50rb makan today', { date: '2026-9-25', note: 'makan' }],
+    ['50rb makan hari ini', { date: '2026-9-25', note: 'makan' }],
+    ['50rb makan 3 hari yang lalu', { date: '2026-9-22', note: 'makan' }],
+    ['50rb makan 20/09/25', { date: '2025-9-20', note: 'makan' }],
+    ['50rb makan 5 okt 2025', { amount: 50000, date: '2025-10-5', note: 'makan' }],
+    ['50rb makan kemarin 20/09', { ok: false, error: 'multiple_dates' }],
     // Wallets
     ['50rb makan siang di KFC BCA', { wallet: 'BCA', note: 'makan siang di KFC', category: 'Food' }],
     ['bensin 50rb kemarin pakai gopay', { wallet: 'GoPay', note: 'bensin', date: '2026-9-24' }],
@@ -676,7 +682,20 @@ function testDebtParser() {
   t('no match: closest names first (a whole word, then typos)', sortByNameMatch_(recs, 'kriesta').map(function (r) { return r.id; }),
     ['HTG-002', 'HTG-003', 'HTG-001']);
   t('no match: "krista" is a word of "GMS Krista"', sortByNameMatch_(recs, 'krista')[0].id, 'HTG-002');
-  const total = cases.length + 12;
+  // Due dates at month end clamp to the target month's last day (fixed "now")
+  const due = function (text, now) {
+    const c = debtCtx_();
+    c.now = now;
+    const r = parseDebt_(text, c);
+    return r && r.due ? testValue_(r.due) : (r && r.error) || null;
+  };
+  t('due: bulan depan on 31 Jan → 28 Feb', due('piutang 500rb Budi tempo bulan depan', new Date(2026, 0, 31, 10)), '2026-2-28');
+  t('due: next month on 31 Jan (leap year) → 29 Feb', due('piutang 500rb Budi due next month', new Date(2028, 0, 31, 10)), '2028-2-29');
+  t('due: bulan depan on 31 Dec → 31 Jan', due('piutang 500rb Budi tempo bulan depan', new Date(2026, 11, 31, 10)), '2027-1-31');
+  t('due: bulan depan mid-month', due('piutang 500rb Budi tempo bulan depan', new Date(2026, 8, 25, 10)), '2026-10-25');
+  t('due: tempo tgl 30 on 31 Jan → 28 Feb', due('piutang 500rb Budi tempo tgl 30', new Date(2026, 0, 31, 10)), '2026-2-28');
+  t('due: tempo tgl 31 on 30 Apr → 31 May', due('piutang 500rb Budi tempo tgl 31', new Date(2026, 3, 30, 10)), '2026-5-31');
+  const total = cases.length + 18;
   console.log((pass === total ? 'PASS' : 'FAIL') + ': testDebtParser ' + pass + '/' + total);
 }
 
@@ -1223,8 +1242,15 @@ function testClosing() {
   const snap4 = testClosingSnap_();
   snap4.sales.push({ row: 3, saleId: 'SAL-0002', invId: 'INV-0002', date: new Date(2026, 10, 1), qty: 1, price: 1100000, fee: 0, link: 'LNK-9' });
   snap4.investments[1].qty = 1;
+  snap4.investments[0].current = 5500;
+  snap4.investments[1].current = 1100000; // typed after the month end
+  snap4.prices.push({ _row: 5, date: new Date(2026, 10, 2), 'inv id': 'INV-0002', price: 1100000 });
   const trim = archiveTrimPlan_(snap4, new Date(2026, 10, 1));
-  t('archive trim', [trim.removeTrx, trim.removeSales, trim.invChanges], [[9], [3], { 3: { 'Quantity': 2, 'Status': 'Holding' } }]);
+  t('archive trim (a price typed after the month end goes back to the month-end price)',
+    [trim.removeTrx, trim.removeSales, trim.removePrices, trim.invChanges],
+    [[9], [3], [5], { 3: { 'Quantity': 2, 'Status': 'Holding', 'Current Price': 1010000, 'Last Price Update': new Date(2026, 9, 30, 12, 0) } }]);
+  t('Category_History rows (expense and income per category, shared rule)', plan.categoryRows,
+    [{ type: 'Expense', category: 'Food', amount: 100000 }, { type: 'Income', category: 'Salary', amount: 5000000 }]);
   // Which month may be closed
   const nov2 = new Date(2026, 10, 2, 9), nov30 = new Date(2026, 10, 30, 18);
   t('October can be closed on 2 Nov', closingBlocker_(2026, 9, snap.trx, {}, nov2), '');
@@ -1238,7 +1264,7 @@ function testClosing() {
     const m = parseMonthArg_(s, nov2);
     return m ? m.year + '-' + (m.month + 1) : null;
   }), ['2026-10', '2026-10', '2025-12', '2026-10', '2026-10', '2026-9', null]);
-  console.log((pass === 15 ? 'PASS' : 'FAIL') + ': testClosing ' + pass + '/15');
+  console.log((pass === 16 ? 'PASS' : 'FAIL') + ': testClosing ' + pass + '/16');
 }
 
 function testReport() {

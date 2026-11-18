@@ -690,7 +690,9 @@ function extractDueDate_(tokens, now) {
     date = makeDate_(now.getFullYear(), now.getMonth(), Number(t(2)), now);
     if (!date || date < today) {
       const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-      date = makeDate_(next.getFullYear(), next.getMonth(), Number(t(2)), now);
+      const day = Number(t(2));
+      // Clamp to the month's last day ("tgl 30" on 31 Jan → 28/29 Feb).
+      date = day >= 1 && day <= 31 ? clampedDay_(next.getFullYear(), next.getMonth(), day, now) : null;
     }
     use(2);
   } else if (/^\d{1,3}$/.test(t(1)) && ['hari', 'days', 'day'].indexOf(t(2)) !== -1) {
@@ -700,10 +702,17 @@ function extractDueDate_(tokens, now) {
     date = dayWithTime_(now.getFullYear(), now.getMonth(), now.getDate() + 7, now);
     use(2);
   } else if ((t(1) === 'bulan' && t(2) === 'depan') || (t(1) === 'next' && t(2) === 'month')) {
-    date = dayWithTime_(now.getFullYear(), now.getMonth() + 1, now.getDate(), now);
+    date = clampedDay_(now.getFullYear(), now.getMonth() + 1, now.getDate(), now); // 31 Jan → 28/29 Feb
     use(2);
   }
   return date ? { date: date } : { error: 'due_unclear' };
+}
+
+/** Day d of month m (may be 12 → January next year), clamped to that month's last day. */
+function clampedDay_(y, m, d, now) {
+  const first = new Date(y, m, 1);
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  return dayWithTime_(first.getFullYear(), first.getMonth(), Math.min(d, last), now);
 }
 
 /**

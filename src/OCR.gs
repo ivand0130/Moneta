@@ -716,9 +716,9 @@ function advanceOcrSplit_(p, ctx) {
   }
   // 5. Already logged?
   if (!d.dupOk) {
-    const dup = findSplitDuplicate_(loadTransactions_(ctx.ss), d);
+    const dup = findSplitDuplicate_(loadTransactions_(ctx.ss), d, loadDebts_(ctx.ss));
     if (dup) {
-      return showStep_(p, title + '\n\n⚠️ This looks already logged (' + escapeHtml_(dup['trx id']) + ', same merchant and date). Save it again?',
+      return showStep_(p, title + '\n\n⚠️ This looks already logged (' + escapeHtml_(dup['trx id']) + ', same total, people and date). Save it again?',
         [[btn_(p, '💾 Save again', 'dup'), btn_(p, '❌ Cancel', 'n')]]);
     }
   }
@@ -826,6 +826,7 @@ function ocrCallback_(p, action, arg, user) {
  */
 function saveOcrHutang_(p, ctx, user) {
   const d = p.d;
+  if (isMonthClosed_(ctx.ss, d.date)) return advanceOcrSplit_(p, ctx); // closed meanwhile: the closed-month question
   if (!claimPending_(p)) return;
   const ss = ctx.ss;
   const payer = d.people[d.payerIdx];
@@ -847,14 +848,38 @@ function saveOcrHutang_(p, ctx, user) {
   editMessage(p.chatId, p.msgId, text);
 }
 
-/** Same merchant + date already logged from a split bill (Input Source OCR-GoPay). */
-function findSplitDuplicate_(rows, d) {
-  const merchant = favKey_(d.merchant);
+/**
+ * A split bill already logged (SPEC Section 10): same total + same people +
+ * same date, among the Input Source OCR-GoPay entries (one Link ID = one bill).
+ * What the sheet keeps per bill: I paid → my Expense + a Piutang per other
+ * person (sum = the total, people = their Debt records' names); someone else
+ * paid → one Hutang (Debt record = the payer) or one Expense "(paid back to
+ * X)", both my share only, so those compare my share + the payer.
+ */
+function findSplitDuplicate_(rows, d, debts) {
   const day = midnight_(d.date).getTime();
-  return rows.filter(function (r) {
-    return String(r['input source']).trim() === 'OCR-GoPay' && r['date'] instanceof Date && midnight_(r['date']).getTime() === day &&
-      favKey_(r['note']).indexOf(merchant) !== -1;
-  })[0] || null;
+  const iPaid = d.payerIdx === d.meIdx;
+  const wantTotal = iPaid ? d.total : (d.meIdx === -1 ? 0 : d.people[d.meIdx].amount);
+  const wantPeople = (iPaid ? d.people.filter(function (x, i) { return i !== d.meIdx; }) : [d.people[d.payerIdx]])
+    .map(function (x) { return favKey_(x.name || x.raw); }).sort().join('|');
+  const debtName = {};
+  debts.forEach(function (x) { debtName[x.id] = x.name; });
+  const bills = {};
+  rows.forEach(function (r) {
+    if (String(r['input source']).trim() !== 'OCR-GoPay' || !(r['date'] instanceof Date) || midnight_(r['date']).getTime() !== day) return;
+    const key = String(r['link id'] || '').trim() || 'trx:' + String(r['trx id']).trim();
+    const b = bills[key] = bills[key] || { first: r, total: 0, people: [] };
+    b.total += Number(r['amount']) || 0;
+    const debtId = String(r['debt id'] || '').trim();
+    const paidTo = String(r['note'] || '').match(/\(paid back to (.+)\)\s*$/);
+    if (debtId && debtName[debtId] !== undefined) b.people.push(favKey_(debtName[debtId]));
+    else if (paidTo) b.people.push(favKey_(paidTo[1]));
+  });
+  const hit = Object.keys(bills).filter(function (k) {
+    const b = bills[k];
+    return Math.abs(b.total - wantTotal) <= 1 && b.people.sort().join('|') === wantPeople;
+  })[0];
+  return hit ? bills[hit].first : null;
 }
 
 /** Writes the sender's GoPay Name into Settings → Users (the row with their Chat ID). */

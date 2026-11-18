@@ -10,8 +10,9 @@
  * work right away (a row without a Favorite ID gets one). Columns are found by
  * header name. Scheduled favorites are prompted by the morning reminder slot
  * (Reminders.gs) with [Yes] [Change amount] [Skip] buttons that keep working
- * for days: their data is "F|<action>|<favId>|<yyyymmdd of the due date>",
- * not tied to the 10-minute pending item.
+ * for days: their data is "F|<action>|<favId>|<yyyymmdd of the due date>"
+ * ([Yes] adds "|<what was shown>", see favShownSig_), not tied to the
+ * 10-minute pending item.
  *
  * Logging a favorite reuses the normal transaction flow (Confirm.gs): the
  * draft carries favId, so rows get Input Source = Favorite and the Favorite
@@ -1138,8 +1139,20 @@ function favPromptButtons_(fav, occ) {
   const tail = '|' + fav.id + '|' + ymd_(occ);
   const rows = fav.valueType === 'Variable'
     ? [[['✏️ Enter amount', 'F|c' + tail], ['⏭ Skip', 'F|s' + tail]]]
-    : [[['✅ Yes', 'F|y' + tail], ['✏️ Change amount', 'F|c' + tail], ['⏭ Skip', 'F|s' + tail]]];
+    : [[['✅ Yes', 'F|y' + tail + '|' + favShownSig_(fav)], ['✏️ Change amount', 'F|c' + tail], ['⏭ Skip', 'F|s' + tail]]];
   return keyboard_(rows);
+}
+
+/**
+ * What the prompt showed, for the [Yes] button: "<amount>.<hash>", the hash
+ * (6 hex) covering wallet, to-wallet, category and fee. Short enough for
+ * Telegram's 64-byte callback data whatever the wallet name is.
+ */
+function favShownSig_(fav) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5,
+    [fav.wallet, fav.toWallet, fav.category, fav.fee].join('|'), Utilities.Charset.UTF_8);
+  const hex = bytes.slice(0, 3).map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+  return String(fav.amount) + '.' + hex;
 }
 
 /**
@@ -1232,6 +1245,8 @@ function favPromptCallback_(cq, parts) {
   if (action === 'c' || fav.valueType === 'Variable') return startFavLog_(chatId, fav, ctx, msgId, true);
 
   // [Yes]: the tap is the confirmation — save right away unless something needs a look.
+  // The favorite changed since the prompt (or an old button without that data): normal preview.
+  if (parts[4] === undefined || parts[4] !== favShownSig_(fav)) return startFavLog_(chatId, fav, ctx, msgId, false);
   const problems = favProblems_(fav, ctx);
   if (problems.length) return startFavLog_(chatId, fav, ctx, msgId, false);
   const p = newPending_(chatId, 'trx', favTrxDraft_(fav, ctx));

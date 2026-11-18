@@ -745,7 +745,7 @@ function afterSave_(ss, chatId, entries) {
     const autoDelete = getSettingYes_(SETTING.BUDGET_AUTO_DELETE);
     const text = buildBudgetText_(items) + (autoDelete ? '\n\n🕒 <i>Deleted at the end of the day.</i>' : '');
     const sent = sendMessage(chatId, text);
-    if (autoDelete) scheduleDelete_(chatId, sent.message_id, secondsUntilEndOfDay_());
+    if (autoDelete) scheduleDelete_(chatId, sent.message_id, secondsUntilEndOfDay_(), true);
   } catch (err) {
     logError_('afterSave_', err);
   }

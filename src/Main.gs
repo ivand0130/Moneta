@@ -350,7 +350,7 @@ function buildHelpText_() {
     '/contact — contacts and aliases · <code>/contact add Budi, Budi Santoso</code>',
     '/wallet — list wallets · <code>/wallet add Jenius</code>',
     '/category or /cat — list categories · <code>/cat add Pets</code>',
-    '/report — this month so far · <code>/report oktober 2026</code> (closed months come from their archive; deleted after 60s)',
+    '/report — this month so far · <code>/report oktober 2026</code> · one wallet or group: <code>/report bca</code>, <code>/report spending okt</code> (closed months come from their archive; deleted after 60s)',
     '/closing — close the oldest open month (password): archive, report, carry balances over · <code>tutup transaksi bulan Oktober 2026</code>',
     '/links — the main sheet, archive and receipts folders in use · /setsheet, /setarchive, /settemplate (links) · /template',
     '/changepass — change the /saldo password (default 0000)',

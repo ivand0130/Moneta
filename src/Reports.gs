@@ -418,7 +418,7 @@ function reportSheetRows_(r) {
   });
   if (!f) r.budgets.forEach(function (b) {
     add('Budget', b.name, b.spent, 'of ' + formatRp_(b.budget) + ' (' + Math.round(b.spent / b.budget * 100) + '%) · remaining ' +
-      (b.remaining < 0 ? '−' + formatRp_(-b.remaining) : formatRp_(b.remaining)) + ' · ' + b.status + (b.spent > b.budget ? ' ⚠️' : ''));
+      formatRp_(b.remaining) + ' · ' + b.status + (b.spent > b.budget ? ' ⚠️' : ''));
   });
   r.groups.forEach(function (g) { add('Wallet group', g.name, g.end, 'start ' + formatRp_(g.start) + ', change ' + formatRp_(g.change)); });
   r.wallets.forEach(function (w) { add('Wallet', w.name + ' (' + w.group + ')', w.end, 'start ' + formatRp_(w.start) + ', change ' + formatRp_(w.change)); });
@@ -476,7 +476,9 @@ function collectReportSource_(ss) {
   const walletRows = readTableByHeaders_(ss.getSheetByName(TAB.WALLETS), 'Wallet');
   const openings = {};
   walletRows.forEach(function (r) { openings[String(r['wallet']).trim()] = Number(r['opening balance']) || 0; });
+  const prices = ss.getSheetByName(TAB.PRICES);
   return {
+    prices: prices === null ? [] : readTableByHeaders_(prices, 'Inv ID'), // Month-End rows → opening value per category
     trx: loadTransactions_(ss), wallets: loadWallets_(ss), openings: openings, debts: loadDebts_(ss),
     investments: loadInvestments_(ss), sales: loadSales_(ss), favorites: loadFavorites_(ss), categories: loadCategories_(ss),
     investmentGroups: getSettingList_(SETTING.INVESTMENT_GROUPS)
@@ -531,20 +533,88 @@ function archiveIdOf_(row) {
 }
 
 // ---------------------------------------------------------------------------
+// Wallet / wallet-group filter (pure)
+// ---------------------------------------------------------------------------
+
+/**
+ * A wallet name or a wallet group (case-insensitive) → { label, kind, wallets:
+ * [wallet names] }, or null. A wallet is in a group when any of its
+ * comma-separated groups matches. A wallet name wins over a group name.
+ */
+function resolveReportFilter_(word, wallets) {
+  const w = String(word || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!w) return null;
+  const wallet = findWallet_(wallets, w);
+  if (wallet) return { label: wallet.name, kind: 'wallet', wallets: [wallet.name] };
+  let label = '';
+  const names = wallets.filter(function (x) {
+    const g = walletGroups_(x).filter(function (name) { return name.toLowerCase() === w; })[0];
+    if (g && !label) label = g;
+    return !!g;
+  }).map(function (x) { return x.name; });
+  return names.length ? { label: label, kind: 'group', wallets: names } : null;
+}
+
+/**
+ * /report arguments → { ym, filter } (filter null when none), or
+ * { error: 'month' } / { error: 'filter', word }. The filter is the words
+ * before or after the month: "bca", "bca oktober 2026", "oktober 2026 spending".
+ */
+function parseReportArgs_(text, wallets, now) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  const whole = parseMonthArg_(t, now);
+  if (whole) return { ym: whole, filter: null };
+  const words = t.split(' ');
+  const n = words.length;
+  const splits = []; // [filter words, month words], longest filter first, words before the month first
+  for (let k = n; k >= 1; k--) {
+    splits.push([words.slice(0, k).join(' '), words.slice(k).join(' ')]);
+    if (k < n) splits.push([words.slice(n - k).join(' '), words.slice(0, n - k).join(' ')]);
+  }
+  let unknown = '';
+  for (let i = 0; i < splits.length; i++) {
+    const ym = parseMonthArg_(splits[i][1], now);
+    if (!ym) continue;
+    const filter = resolveReportFilter_(splits[i][0], wallets);
+    if (filter) return { ym: ym, filter: filter };
+    unknown = splits[i][0]; // the last one tried = the shortest filter words
+  }
+  // Only digits ("13 2026") → a month typed wrong, not a wallet
+  return unknown && /[^\d\s\/-]/.test(unknown) ? { error: 'filter', word: unknown } : { error: 'month' };
+}
+
+/** Wallet names and wallet groups, for the "unknown filter" message. */
+function reportFilterChoices_(wallets) {
+  const groups = [];
+  const names = wallets.filter(function (w) { return w.active; }).map(function (w) {
+    walletGroups_(w).forEach(function (g) { if (groups.indexOf(g) === -1) groups.push(g); });
+    return w.name;
+  });
+  return { wallets: names, groups: groups };
+}
+
+// ---------------------------------------------------------------------------
 // /report
 // ---------------------------------------------------------------------------
 
 function startReport_(chatId, args) {
   const now = new Date();
-  const ym = parseMonthArg_(args, now);
-  if (!ym) {
-    return sendMessage(chatId, "I couldn't read the month. Examples: <code>/report</code> (this month), <code>/report oktober 2026</code>, " +
-      '<code>/report 10 2026</code>.');
+  const examples = 'Examples: <code>/report</code> (this month), <code>/report oktober 2026</code>, <code>/report 10 2026</code>, ' +
+    '<code>/report bca</code>, <code>/report spending oktober 2026</code>.';
+  const ss = openMainSheet_();
+  const wallets = loadWallets_(ss);
+  const parsed = parseReportArgs_(args, wallets, now);
+  if (parsed.error === 'filter') {
+    const choices = reportFilterChoices_(wallets);
+    return sendMessage(chatId, "I don't know a wallet or wallet group called “" + escapeHtml_(parsed.word) + '”.\n' +
+      'Wallets: ' + escapeHtml_(choices.wallets.join(', ') || '—') + '\nGroups: ' + escapeHtml_(choices.groups.join(', ') || '—') + '\n' + examples);
   }
+  if (parsed.error) return sendMessage(chatId, "I couldn't read the month. " + examples);
+  const ym = parsed.ym;
+  const filter = parsed.filter;
   const key = monthKey_(ym.year, ym.month);
   if (key > monthKey_(now.getFullYear(), now.getMonth())) return sendMessage(chatId, "That month hasn't started yet.");
   sendTyping_(chatId);
-  const ss = openMainSheet_();
   const reportRows = loadReportRows_(ss);
   const row = reportRows[key];
   const closed = row && String(row['status']).trim().toLowerCase() === 'closed';
@@ -552,13 +622,13 @@ function startReport_(chatId, args) {
   if (!closed) {
     const src = collectReportSource_(ss);
     src.prev = previousTotals_(reportRows, src.trx, key);
-    const data = buildReportData_(src, ym.year, ym.month, now);
+    const data = buildReportData_(src, ym.year, ym.month, now, filter);
     if (data.count === 0 && key < monthKey_(now.getFullYear(), now.getMonth())) {
-      return sendMessage(chatId, 'Nothing was logged in ' + escapeHtml_(data.label) + '.');
+      return sendMessage(chatId, 'Nothing was logged in ' + escapeHtml_(data.label) + (filter ? ' for ' + escapeHtml_(filter.label) : '') + '.');
     }
     return sendTimed_(chatId, formatReportText_(data, hide, 'live', ''), REPORT_DELETE_SECONDS);
   }
-  sendTimed_(chatId, buildClosedReportText_(ss, reportRows, key, hide), REPORT_DELETE_SECONDS);
+  sendTimed_(chatId, buildClosedReportText_(ss, reportRows, key, hide, filter), REPORT_DELETE_SECONDS);
 }
 
 /** Sends a message that deletes itself after the given seconds (cleanup trigger), with a note saying so. */
@@ -573,7 +643,7 @@ function sendTimed_(chatId, text, seconds) {
  * The report of a closed month, from its archive sheet (complete data of
  * that month). If the archive can't be opened, the saved Monthly Report row.
  */
-function buildClosedReportText_(ss, reportRows, key, hide) {
+function buildClosedReportText_(ss, reportRows, key, hide, filter) {
   const row = reportRows[key];
   const ym = monthOfKey_(key);
   const link = String(row['archive link'] || '');
@@ -584,7 +654,9 @@ function buildClosedReportText_(ss, reportRows, key, hide) {
     src.prev = previousTotals_(reportRows, [], key);
     src.budgetRows = historyRowsOf_(ss, TAB.BUDGET_HISTORY, key);
     src.closedItems = closedItems;
-    const data = buildReportData_(src, ym.year, ym.month, new Date(ym.year, ym.month + 1, 1));
+    // The filter again against the archive's wallets (what the groups were that month); the main sheet's otherwise
+    const f = filter ? resolveReportFilter_(filter.label, src.wallets) || filter : null;
+    const data = buildReportData_(src, ym.year, ym.month, new Date(ym.year, ym.month + 1, 1), f);
     const tab = archive.getSheetByName(ARCHIVE_REPORT_TAB);
     return formatReportText_(data, hide, 'closed', tab ? archive.getUrl() + '#gid=' + tab.getSheetId() : link);
   } catch (err) {
@@ -593,7 +665,7 @@ function buildClosedReportText_(ss, reportRows, key, hide) {
     return '📊 <b>Report · ' + escapeHtml_(monthLabel_(ym.year, ym.month, true)) + '</b> 🔒 closed\n' +
       '💵 Income ' + n('income') + ' · 🧾 Expense ' + n('expense') + ' · Net ' + n('net cash flow') + '\n' +
       '📈 Investments ' + n('portfolio value') + ' · 🏦 Net worth ' + n('net worth') + '\n' +
-      "<i>(The archive sheet couldn't be opened, so this is the saved summary.)</i>" +
+      "<i>(The archive sheet couldn't be opened, so this is the saved summary" + (filter ? ', without the filter' : '') + '.)</i>' +
       (link ? '\n📄 <a href="' + escapeHtml_(link) + '">Archive sheet</a>' : '');
   }
 }

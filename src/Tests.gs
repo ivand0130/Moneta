@@ -1303,7 +1303,7 @@ function testReport() {
   t('investments', [r.investments.invested, r.investments.sold, r.investments.value, r.investments.realized, r.investments.change],
     [1000000, 1200000, 2000000, 200000, 500000]);
   t('net worth = cash + investments + piutang − hutang', r.netWorth, 5600000 + 210000 + 2000000 + 300000 - 80300);
-  t('budgets from the Categories tab', r.budgets, [{ name: 'Food', budget: 1000000, spent: 100000 }]);
+  t('budgets from the Categories tab', r.budgets, [{ name: 'Food', budget: 1000000, spent: 100000, remaining: 900000, status: 'Under' }]);
   t('by person', r.users.map(function (u) { return [u.name, u.income, u.expense]; }), [['Daniel', 0, 100000], ['Partner', 5000000, 0]]);
   const text = formatReportText_(r, true, 'closed', 'https://x');
   t('chat text: spoilers, vs last month, archive link', [/<tg-spoiler>Rp5\.000\.000<\/tg-spoiler>/.test(text), /income ▲25%/.test(text),
@@ -1311,5 +1311,63 @@ function testReport() {
   t('Report tab rows have 4 columns', reportSheetRows_(r).every(function (x) { return x.length === 4; }), true);
   const row = reportRowValues_(r, 'Closed', '', 'L', '');
   t('Monthly Report row', [row['Month Key'], row['Net Worth']], [202610, 8029700]);
-  console.log((pass === 12 ? 'PASS' : 'FAIL') + ': testReport ' + pass + '/12');
+
+  // Wallet / wallet-group filter
+  const fw = snap.wallets.map(function (w) { return Object.assign({}, w); });
+  fw[1].group = 'Spending'; fw[1].groups = ['Spending', 'E-Wallet']; // GoPay is in two groups
+  const nov2 = new Date(2026, 10, 2, 9);
+  const pa = function (s) {
+    const x = parseReportArgs_(s, fw, nov2);
+    return x.error ? x.error + ':' + (x.word || '') : x.ym.year + '-' + (x.ym.month + 1) + (x.filter ? ' ' + x.filter.label + '=' + x.filter.wallets.join('+') : '');
+  };
+  t('report args: filter before / after the month, groups, unknown words',
+    ['', 'oktober 2026', 'bca', 'BCA oktober 2026', 'oktober 2026 spending', 'e-wallet okt', 'xyz oktober', '13 2026'].map(pa),
+    ['2026-11', '2026-10', '2026-11 BCA=BCA', '2026-10 BCA=BCA', '2026-10 Spending=BCA+GoPay', '2026-10 E-Wallet=GoPay',
+      'filter:xyz', 'month:']);
+  const rb = buildReportData_(src, 2026, 9, new Date(2026, 10, 1), resolveReportFilter_('bca', fw));
+  t('filtered by wallet: only its rows; transfers in/out listed, never income/expense',
+    [rb.income, rb.expense, rb.count, rb.wallets.map(function (w) { return [w.name, w.start, w.end]; }), rb.transfers],
+    [5000000, 100000, 9, [['BCA', 1000000, 5600000]],
+      [{ name: 'BCA → GoPay', amount: 200000 }, { name: 'BCA → IPOT', amount: 1000000 }, { name: 'IPOT → BCA', amount: 1200000 }]]);
+  const rg = buildReportData_(src, 2026, 9, new Date(2026, 10, 1), resolveReportFilter_('Spending', fw));
+  const rgo = buildReportData_(src, 2026, 9, new Date(2026, 10, 1), resolveReportFilter_('gopay', fw));
+  t('filtered by group: a transfer inside the group is not listed; one subtotal', [rg.income, rg.expense, rg.groups.map(function (g) { return [g.name, g.end]; }),
+    rg.transfers.map(function (x) { return x.name; }), rgo.income, rgo.adjustments, rgo.transfers],
+    [5000000, 100000, [['Spending', 5810000]], ['BCA → IPOT', 'IPOT → BCA'], 0, 10000, [{ name: 'BCA → GoPay', amount: 200000 }]]);
+  const ft = formatReportText_(rb, false, 'live', '');
+  const fRows = reportSheetRows_(rb);
+  t('filtered text: says so, no debts / investments / net worth / budgets / vs last month',
+    [/Filtered: BCA/.test(ft), /full \/report/.test(ft), /Net worth|Piutang|Investments|Budgets|vs Sep/.test(ft),
+      fRows[1][1], fRows.some(function (x) { return x[0] === 'Net worth' || x[0] === 'Budget'; })],
+    [true, true, false, 'Filtered: BCA', false]);
+
+  // Investments: opening per category from Price_History Month-End rows of the previous month's last day
+  const isrc = Object.assign({}, src, { investments: src.investments.map(function (x) { return Object.assign({}, x); }) });
+  isrc.investments[1].current = 1050000; // Emas: 2 g, cost 2.000.000, value 2.100.000
+  const pr = function (date, id, asset, value, me) { return { date: date, 'inv id': id, 'asset name': asset, price: 0, value: value, source: 'Closing', 'month-end': me }; };
+  isrc.prices = [pr(new Date(2026, 8, 30), 'INV-0002', 'Antam', 1900000, 'Yes'), pr(new Date(2026, 8, 30), 'INV-9999', 'BBCA', 300000, 'Yes'),
+    pr(new Date(2026, 8, 29), 'INV-0002', 'Antam', 999, 'Yes'), pr(new Date(2026, 8, 30), 'INV-0002', 'Antam', 999, '')];
+  const ri = buildReportData_(isrc, 2026, 9, new Date(2026, 10, 1)).investments;
+  t('investments: opening / ending / change / unrealized % per category (sold-out category kept)',
+    [ri.opening, ri.value, ri.change, ri.unrealized, ri.unrealizedPct, ri.categories.map(function (c) { return [c.name, c.opening, c.value, c.change, c.unrealized, c.unrealizedPct]; })],
+    [2200000, 2100000, 600000, 100000, 0.05, [['Emas', 1900000, 2100000, 200000, 100000, 0.05], ['Saham', 300000, 0, -300000, 0, null]]]);
+  const it = formatReportText_(buildReportData_(isrc, 2026, 9, new Date(2026, 10, 1)), false, 'closed', '');
+  t('investments text', [/opening Rp2\.200\.000 → ending Rp2\.100\.000 · unrealized \+Rp100\.000 \(\+5%\)/.test(it),
+    /Emas Rp1\.900\.000 → Rp2\.100\.000 \(\+Rp200\.000\) · unrealized \+Rp100\.000 \(\+5%\)/.test(it)], [true, true]);
+  const nt = formatReportText_(r, false, 'closed', ''); // no Month-End rows: opening = last month's Portfolio Value, categories "—"
+  t('investments without Month-End rows', [r.investments.opening, /Emas — → Rp2\.000\.000 \(—\)/.test(nt),
+    reportSheetRows_(r).filter(function (x) { return x[1] === 'Emas'; })[0][3]], [1500000, true, 'opening —, change —, unrealized Rp0 (+0%)']);
+
+  // Budgets: remaining (negative = over) and Under / At / Over
+  const bsrc = Object.assign({}, src, { categories: [{ name: 'Food', type: 'Expense', budget: 50000 }, { name: 'Fun', type: 'Expense', budget: 0 }] });
+  const rbud = buildReportData_(bsrc, 2026, 9, new Date(2026, 10, 1));
+  const atSrc = Object.assign({}, src, { categories: [{ name: 'Food', type: 'Expense', budget: 100000 }] });
+  const bt = formatReportText_(rbud, false, 'closed', '');
+  t('budget: remaining and status', [rbud.budgets, buildReportData_(atSrc, 2026, 9, new Date(2026, 10, 1)).budgets[0].status,
+    /Food Rp100\.000 of Rp50\.000 \(200%\) · remaining −Rp50\.000 · Over ⚠️/.test(bt),
+    /remaining <tg-spoiler>Rp900\.000<\/tg-spoiler> · Under/.test(text),
+    reportSheetRows_(rbud).filter(function (x) { return x[0] === 'Budget'; })[0][3]],
+    [[{ name: 'Food', budget: 50000, spent: 100000, remaining: -50000, status: 'Over' }], 'At', true, true,
+      'of Rp50.000 (200%) · remaining −Rp50.000 · Over ⚠️']);
+  console.log((pass === 20 ? 'PASS' : 'FAIL') + ': testReport ' + pass + '/20');
 }

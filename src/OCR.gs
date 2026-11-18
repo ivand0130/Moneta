@@ -628,8 +628,8 @@ function startOcrSplit_(chatId, msgId, ocr, caption, image, ctx) {
   const date = cap.dateGiven ? cap.date : (ocrDate_(ocr.date, now) || now);
   const p = newPending_(chatId, 'ocr', {
     merchant: ocr.merchant || 'Split bill', issuer: ocr.issuer, date: date.getTime(), total: ocr.total, payer: ocr.payer,
-    people: ocr.participants.map(function (x) { return { raw: x.name, amount: x.amount, confidence: x.confidence, name: null, known: false }; }),
-    totalConfidence: ocr.totalConfidence, meIdx: null, meHow: '', payerIdx: null, mismatchOk: false, dupOk: false, paidBack: null,
+    people: ocr.participants.map(function (x) { return { raw: x.name, amount: x.amount, readAmount: x.amount, confidence: x.confidence, name: null, known: false }; }),
+    totalConfidence: ocr.totalConfidence, totalRead: ocr.total, meIdx: null, meHow: '', payerIdx: null, mismatchOk: false, dupOk: false, paidBack: null,
     wallet: cap.wallet, walletChoices: cap.walletChoices, walletHow: cap.wallet ? 'mentioned' : '', category: cap.category || null,
     categoryHow: cap.categoryHow || '', capNote: cap.note || '', image: image, type: 'Expense', note: ocr.merchant || 'Split bill'
   });
@@ -639,14 +639,40 @@ function startOcrSplit_(chatId, msgId, ocr, caption, image, ctx) {
 
 function ocrSplitTitle_(d) {
   return '🧾 <b>GoPay Split Bill</b> · ' + escapeHtml_(d.merchant) + ' · ' + formatDate_(d.date) +
-    (d.total ? ' · Total ' + formatRp_(d.total) : '');
+    (d.total ? ' · Total ' + formatRp_(d.total) : '') + ocrSplitWarnings_(d);
+}
+
+/** A participant read with low confidence (name or share), and not changed since. */
+function ocrSplitUnsure_(x) {
+  return x.confidence < OCR_LOW_CONFIDENCE && (x.readAmount === undefined || x.amount === x.readAmount);
+}
+
+/**
+ * "Highlight uncertain values" (SPEC Section 10), same threshold as the receipt
+ * flow: the total and any name/share read with low confidence. Shown under the
+ * title on every step and in the final preview (the title is the preview header).
+ */
+function ocrSplitWarnings_(d) {
+  const lines = [];
+  if (d.total && d.totalRead && d.total === d.totalRead && d.totalConfidence < OCR_LOW_CONFIDENCE) {
+    lines.push('⚠️ Total read as ' + formatRp_(d.total) + ' (low confidence), please check it against the photo.');
+  }
+  const unsure = (d.people || []).filter(ocrSplitUnsure_);
+  if (unsure.length) {
+    lines.push('⚠️ Please check (low confidence): ' + unsure.map(function (x) {
+      return escapeHtml_(x.raw) + ' ' + formatRp_(x.amount);
+    }).join(', ') + '. If a name or share is wrong: ❌ Cancel and type the split bill instead.');
+  }
+  return lines.length ? '\n' + lines.join('\n') : '';
 }
 
 function advanceOcrSplit_(p, ctx) {
   const d = p.d;
   p.awaitText = null;
   const title = ocrSplitTitle_(d);
-  const list = d.people.map(function (x, i) { return (i + 1) + '. ' + escapeHtml_(x.raw) + ' · ' + formatRp_(x.amount); }).join('\n');
+  const list = d.people.map(function (x, i) {
+    return (i + 1) + '. ' + escapeHtml_(x.raw) + ' · ' + formatRp_(x.amount) + (ocrSplitUnsure_(x) ? ' ⚠️' : '');
+  }).join('\n');
 
   // 1. Which participant is me (my GoPay name from Users; asked and remembered otherwise).
   if (d.meIdx === null) {

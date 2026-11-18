@@ -3,10 +3,11 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Pre-Phase 9 recheck (2026-11-18): 22 fixes + new Dashboard — DONE, tested
-and approved by the owner (upgradeSheets run, Dashboard rebuilt).
+Phase 9 — Final review: review done, README.md + TESTING.md written, the 14
+missing SPEC items built (2026-11-18) — waiting for the owner's test.
+Pre-Phase 9 recheck — DONE (approved 2026-11-18).
 Phase 8, 7, 6, 5, 4, 3, 2B, 2, 1, 0 — DONE (Phase 8 approved by the owner 2026-11-09).
-Next: Phase 9 — Final review.
+Next: owner runs TESTING.md; then the project is complete.
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)
@@ -718,6 +719,48 @@ Still to change in code that is already built:
     9 charts (added savings rate trend and budget vs spent)
   - Tests: testClosing 16 (month-end price in the archive, Category_History
     rows), testParser +6 cases, testDebtParser +6 due-date cases
+- Phase 9 (final review) — built 2026-11-18, owner approved all 14 gaps
+  - Review against SPEC (Sections 22/23): 14 missing/partial items found,
+    quota and error handling OK (see README "Limits to know")
+  - README.md (owner's guide: deploy, add a wallet, password, bot not
+    replying, monthly routine, editor functions, limits) and TESTING.md
+    (full checklist, SPEC 22 item 6)
+  - 1 /report filter: `/report bca`, `/report spending okt` (wallet wins over
+    group; a wallet is in a group if any of its comma-separated groups
+    matches). Filtered reports leave out debts, investments, net worth,
+    budgets and favorites (said at the top); transfers in/out of the filter
+    are listed, never income/expense (parseReportArgs_, resolveReportFilter_)
+  - 2 Closing writes a month-end snapshot into Price_History (one row per
+    purchase held at the month end, dated its last day, Source Closing,
+    Month-End Yes; price = last price up to the month end, else buy price).
+    Month-End rows are never pruned by later closings and are ignored by
+    lastHistoryPrices_. /closing requires the Month-End column
+  - 3 /report and the archive Report tab: per investment category opening
+    (from last month's snapshot; "—" before the first one), ending, change,
+    unrealized Rp and %. Dashboard: "Investments this month" block (bought,
+    sold, realized gain, portfolio now, change since month start) and per
+    category month start / now / change / gain % (helper column AH)
+  - 4 Budget lines in /report: remaining + Under / At / Over
+  - 5 Debt previews: wallet group shown; warnings for large amount,
+    duplicate, wallet going negative, future date (debtPreviewChecks_)
+  - 6 Buy without an asset name asks "Asset name?" (assets of that
+    category, Just "<category>", Other); 7 sell preview: Fee line with
+    [Enter fee] / [Change fee] / [No fee]; 8 /inv update unknown asset:
+    [Create it] sends a ready "beli …" message to copy
+  - 9 Adding to a Paid/Converted record offers [Create new Piutang/Hutang]
+  - 10 Split bill: low-confidence total/shares marked ⚠️ (same 0.8 threshold
+    as receipts)
+  - 11 Albums / several photos: queued (PHOTO_QUEUE Script Property + cache
+    flag, max 10), "📚 Got N photos — I'll show them one at a time"; the next
+    starts when the current preview is finished (or by the cleanup trigger
+    within a minute after a text answer / expiry)
+  - 12 Closing reminders have a [🔒 Start closing] button (CL|start → the
+    normal /closing summary)
+  - 13 Settings info row Receipts Folder ID (filled by /setreceipts, the
+    first photo and upgradeSettings; Archive Folder ID too)
+  - 14 Archive copies: every tab protected (warning-only) at closing
+  - Tests: testReport 20, testClosing 17 (snapshot), testInvParser new
+    cases; all node-run tests pass. Nothing run in Apps Script yet
 ## Known issues
 - (Resolved in Phase 4) Conversions are Expense/Income rows with Direction
   None, so every total that counts Type = Expense / Income includes them
@@ -756,6 +799,12 @@ Still to change in code that is already built:
   early in the month make it look high at first
 - Split-bill duplicate check when someone else paid compares my share + the
   payer (the full participant list isn't stored)
+- Photo queue: the next photo waits for any open preview in that chat (up to
+  10 minutes); max 10 waiting; a lost queue means resending the photos
+- Investment "Month Start" values only exist from the first closing after
+  2026-11-18 (earlier months show "—")
+- A filtered /report of a closed month whose archive can't be opened shows
+  the saved (unfiltered) summary and says so
 
 ## Notes / decisions made during build
 - Formulas written by script must be written while the sheet locale is

@@ -372,6 +372,8 @@ function closingSchemaMissing_(ss) {
   [TAB.CLOSED_HISTORY, TAB.BUDGET_HISTORY, TAB.CATEGORY_HISTORY, TAB.REPORT].forEach(function (t) { if (ss.getSheetByName(t) === null) missing.push('tab ' + t); });
   const debts = ss.getSheetByName(TAB.DEBTS);
   if (debts !== null && getHeaderMap_(debts)['carried paid'] === undefined) missing.push('column Hutang_Piutang → Carried Paid');
+  const prices = ss.getSheetByName(TAB.PRICES);
+  if (prices !== null && getHeaderMap_(prices)['month-end'] === undefined) missing.push('column Price_History → Month-End');
   return missing.length ? 'The sheet needs an update first (' + missing.join(', ') + '): run upgradeSheets in the Apps Script editor, then /closing again.' : '';
 }
 

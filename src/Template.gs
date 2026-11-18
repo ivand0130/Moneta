@@ -1394,7 +1394,7 @@ function buildDashboard_(ss, sheet, r) {
   sheet.getRange('AH2').setValue('Month Start');
   sheet.getRange('AH3').setFormula('=MAP(AE3:AE30,LAMBDA(c,IF(OR(c="",' + snapOn + '=0),,SUMPRODUCT((' + r(P, 'Month-End') +
     '="Yes")*(' + r(P, 'Date') + '=' + lastEom + ')*(IFERROR(VLOOKUP(' + r(P, 'Inv ID') + ',{' + r(I, 'Inv ID') + ',' +
-    r(I, 'Investment Category') + '},2,FALSE),"")=c),N(+' + r(P, 'Value') + ')))))');
+    r(I, 'Investment Category') + '},2,FALSE),"")=c),IF(ISNUMBER(' + r(P, 'Value') + '),' + r(P, 'Value') + ',0)))))');
   sheet.getRange('AH3:AH30').setNumberFormat(RP);
 
   // ---- 📈 Investments this month (K:P, top right) --------------------------------------------------------
@@ -1409,7 +1409,7 @@ function buildDashboard_(ss, sheet, r) {
   ]]).setNumberFormat(RP);
   sheet.getRange('O7').setValue('incl. money added or taken out').setFontColor('#999999').setFontSize(9);
   header('K9:O9', ['Category', 'Month Start', 'Now', 'Change', 'Gain/Loss %']);
-  sheet.getRange('K10').setFormula('=IFERROR(FILTER(AE3:AE30,AE3:AE30<>""),"No investments yet")');
+  sheet.getRange('K10').setFormula('=IFERROR(ARRAY_CONSTRAIN(FILTER(AE3:AE30,AE3:AE30<>""),7,1),"No investments yet")');
   sheet.getRange('L10:O10').setFormulas([[
     '=MAP(K10:K16,LAMBDA(c,IF(OR(c="",c="No investments yet"),,IFERROR(INDEX(AH3:AH30,MATCH(c,AE3:AE30,0)),""))))',
     '=MAP(K10:K16,LAMBDA(c,IF(OR(c="",c="No investments yet"),,SUMIFS(AF3:AF30,AE3:AE30,c))))',

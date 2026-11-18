@@ -224,3 +224,24 @@ Switch back to the real main sheet afterwards.
 | ☐ | Move a column to another position | Still works (columns found by name) |
 | ☐ | `/undo` | Shows what will be removed → Yes → gone (linked rows together) |
 | ☐ | Unknown command `/abc` | "Unknown command. Type /help…" |
+
+## 18. Phase 9 additions
+
+| ✓ | Do | Expect |
+|---|---|---|
+| ☐ | `/report bca` and `/report spending okt` | "Filtered: …" at the top; only those wallets; no net worth / debts |
+| ☐ | `/report xyz` | Lists the wallets and groups you can use |
+| ☐ | `/report` (budgets) | Each budget shows remaining and Under / At / Over |
+| ☐ | `/report` (investments), after the next closing | Per category: start → end, change, gain Rp and % |
+| ☐ | `piutang 10jt Budi` from a wallet with less money | Preview shows "BCA (Spending)" + warnings (large amount, goes negative) |
+| ☐ | Add to a paid record by ID, e.g. `tambah piutang PTG-001 100rb` | "already Paid" + [➕ Create new Piutang for Budi] |
+| ☐ | `beli emas 2gr 1.350rb/gr dari BCA` | Asks "Asset name?" (earlier assets, Just "Emas", Other) |
+| ☐ | `jual BBCA 1 lot harga 10.200 ke BCA` | Preview "Fee: none" + [💸 Enter fee] → `5rb` → new realized gain |
+| ☐ | `/inv update` with an unknown asset | [➕ Create it] sends a ready "beli …" message |
+| ☐ | Unclear split-bill photo | ⚠️ "low confidence" lines on the preview |
+| ☐ | Send 3 receipts at once (album) | "📚 Got 3 photos…", then Photo 1, 2, 3 one at a time |
+| ☐ | Closing reminder on the last day | Has [🔒 Start closing]; tapping shows the closing summary |
+| ☐ | After closing | Price_History has Month-End = Yes rows (Source Closing) dated the last day; editing the archive asks "are you sure?" |
+| ☐ | Settings tab | Receipts Folder ID row filled |
+| ☐ | Dashboard top right | "Investments this month" block; Month Start fills after the next closing |
+

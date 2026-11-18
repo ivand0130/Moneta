@@ -103,9 +103,12 @@ Go down this list; stop when it works again.
 
 1. Last day of the month: the bot reminds you. Update investment prices
    (`/inv update`), check everything is logged.
-2. `/closing` → read the summary → 🔒 Close → password. The month moves to an
+2. Tap **🔒 Start closing** on the reminder (or send `/closing`) → read the
+   summary → 🔒 Close → password. The month moves to an
    archive sheet in Drive (MonetaBot/Archive/<year>) and you get the report.
-3. Closing is final (no reopen). Entries dated in a closed month are blocked;
+3. `/report` shows any month; `/report bca` or `/report spending` shows one
+   wallet or wallet group.
+4. Closing is final (no reopen). Entries dated in a closed month are blocked;
    use `/adjust` to correct a balance instead.
 
 ## 6. Editor functions you may need

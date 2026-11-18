@@ -220,7 +220,11 @@ function lastHistoryPrices_(ss) {
   const sheet = ss.getSheetByName(TAB.PRICES);
   const out = {};
   if (sheet === null) return out;
-  readTableByHeaders_(sheet, 'Inv ID').forEach(function (r) { out[String(r['inv id']).trim()] = Number(r['price']); });
+  readTableByHeaders_(sheet, 'Inv ID').forEach(function (r) {
+    // Month-end snapshots (closing) are records of a past month, not the latest typed price.
+    if (String(r['month-end'] || '').trim().toLowerCase() === 'yes') return;
+    out[String(r['inv id']).trim()] = Number(r['price']);
+  });
   return out;
 }
 

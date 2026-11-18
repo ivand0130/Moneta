@@ -3,8 +3,8 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Pre-Phase 9 recheck (2026-11-18): 22 fixes + new Dashboard — built, waiting
-for the owner's test.
+Pre-Phase 9 recheck (2026-11-18): 22 fixes + new Dashboard — DONE, tested
+and approved by the owner (upgradeSheets run, Dashboard rebuilt).
 Phase 8, 7, 6, 5, 4, 3, 2B, 2, 1, 0 — DONE (Phase 8 approved by the owner 2026-11-09).
 Next: Phase 9 — Final review.
 
@@ -668,7 +668,7 @@ Still to change in code that is already built:
     in October blocked, /report of the closed month from the archive, failed
     archive check changes nothing (copy trashed), /setsheet, /setarchive
 
-- Pre-Phase 9 recheck (2026-11-18, owner approved all 22 fixes + category trends)
+- Pre-Phase 9 recheck — DONE 2026-11-18 (owner approved all 22 fixes + category trends, tested OK)
   - Closing: a hold (CLOSING_HOLD Script Property: month, sheet ID, archive
     link) is saved just before the first main-sheet write and removed when
     the writes are done; while it exists for the current main sheet,
@@ -742,6 +742,10 @@ Still to change in code that is already built:
 - Weekly/monthly summaries have no Snooze (by design); the weekly summary
   for a user lists their own records plus records whose owner is unknown.
   Snooze only appears when the morning message has exactly one item
+- Owner's PC (Windows): PowerShell blocks npm/clasp scripts; use
+  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, or npm.cmd / clasp.cmd.
+  In the editor, pick the function in the dropdown before Run (Template.gs
+  defaults to createTemplate, which refuses to run once sheets exist)
 - clasp 3.4 prints "Skipping push." when the online appsscript.json differs
   (here only a trailing newline); `clasp push --force` after checking
 - A favorite paid more than 7 days early (3 for weekly) still gets its

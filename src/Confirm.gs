@@ -976,6 +976,11 @@ function handleCallback_(cq) {
   // Reminder buttons work for days, so they aren't tied to the 10-minute pending item.
   if (parts[0] === 'F') return favPromptCallback_(cq, parts);
   if (parts[0] === 'S') return snoozeCallback_(cq, parts);
+  if (parts[0] === 'CL') { // [Start closing] on the closing reminder (Closing.gs)
+    answerCallbackQuery(cq.id);
+    dropButtons_(chatId, cq.message.message_id);
+    return startClosing_(chatId, '');
+  }
   const p = getPending_(chatId);
   if (!p || p.pid !== parts[0]) {
     answerCallbackQuery(cq.id, 'This has expired. Please send it again.');

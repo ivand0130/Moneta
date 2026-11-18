@@ -1027,7 +1027,20 @@ function testInvParser() {
   t('sold assets are not updated', parseInvUpdate_('TLKM 3.100', ctx.investments).unknown, ['TLKM']);
   t('price "/lot" ÷100, "/lbr" as is', [parseInvUpdate_('BBCA 1.020rb/lot', ctx.investments).items[0].price,
     parseInvUpdate_('BBCA 10.200/lbr', ctx.investments).items[0].price], [10200, 10200]);
-  const total = 27 + cases.length;
+  t('update keeps the typed price of unknown names', parseInvUpdate_('XYZ 1.380rb/gr', ctx.investments).unknownPrices, { XYZ: '1.380rb/gr' });
+
+  // Buying with only a category named asks the asset name; the sell fee is typed as an amount
+  t('category only → asset asked', [parseInvestment_('beli emas 2gr 1.350rb/gr dari BCA', ctx).assetFromCategory,
+    parseInvestment_('beli Antam 1gr 1.4jt/gr', ctx).assetFromCategory, parseInvestment_('beli BBCA 1 lot 9.800/lbr', ctx).assetFromCategory],
+    [true, false, false]);
+  const catInv = ctx.investments.concat([
+    Object.assign({}, ctx.investments[2], { id: 'INV-0008', asset: 'UBS', date: new Date(2026, 5, 1), row: 9 }),
+    Object.assign({}, ctx.investments[2], { id: 'INV-0009', asset: 'Emas', date: new Date(2026, 6, 1), row: 10 }),
+    Object.assign({}, ctx.investments[2], { id: 'INV-0010', asset: 'antam', date: new Date(2025, 0, 1), row: 11 })]);
+  t('asset buttons: most recent first, no category name, no repeats, max', [categoryAssets_(catInv, 'emas', 6),
+    categoryAssets_(catInv, 'Emas', 1), categoryAssets_(catInv, 'Crypto', 6)], [['UBS', 'Antam'], ['UBS'], []]);
+  t('sell fee amounts', ['5rb', '12.500', 'fee 5rb', '0', 'abc', '2 lot'].map(readInvFee_), [5000, 12500, 5000, 0, null, null]);
+  const total = 31 + cases.length;
   console.log((pass === total ? 'PASS' : 'FAIL') + ': testInvParser ' + pass + '/' + total);
 }
 
@@ -1249,6 +1262,9 @@ function testClosing() {
   t('archive trim (a price typed after the month end goes back to the month-end price)',
     [trim.removeTrx, trim.removeSales, trim.removePrices, trim.invChanges],
     [[9], [3], [5], { 3: { 'Quantity': 2, 'Status': 'Holding', 'Current Price': 1010000, 'Last Price Update': new Date(2026, 9, 30, 12, 0) } }]);
+  t('month-end snapshot: held purchases at the last price up to the month end (sold-out one left out)',
+    plan.snapshotRows.map(function (r) { return [r.invId, r.price, r.qty, r.value, r.date.getDate()]; }),
+    [['INV-0002', 1010000, 2, 2020000, 31]]);
   t('Category_History rows (expense and income per category, shared rule)', plan.categoryRows,
     [{ type: 'Expense', category: 'Food', amount: 100000 }, { type: 'Income', category: 'Salary', amount: 5000000 }]);
   // Which month may be closed
@@ -1264,7 +1280,7 @@ function testClosing() {
     const m = parseMonthArg_(s, nov2);
     return m ? m.year + '-' + (m.month + 1) : null;
   }), ['2026-10', '2026-10', '2025-12', '2026-10', '2026-10', '2026-9', null]);
-  console.log((pass === 16 ? 'PASS' : 'FAIL') + ': testClosing ' + pass + '/16');
+  console.log((pass === 17 ? 'PASS' : 'FAIL') + ': testClosing ' + pass + '/17');
 }
 
 function testReport() {

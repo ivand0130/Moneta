@@ -65,10 +65,14 @@ function monthLabel_(year, month, long) {
  * sales, favorites, categories, investmentGroups, prev ({ income, expense,
  * portfolio, netWorth } of the month before, or null), budgetRows
  * (Budget_History rows of this month, closed months only), closedItems
- * (Closed_History rows of this month) }. `now` decides "overdue" for the
- * current month.
+ * (Closed_History rows of this month), prices (Price_History rows, lowercase
+ * keys; optional) }. `now` decides "overdue" for the current month.
+ * filter (optional) = { label, wallets: [wallet names] } from
+ * resolveReportFilter_: income / expense / categories / top / wallets /
+ * transfers then cover only rows whose Wallet is one of them (a transfer to
+ * or from another wallet is listed as a transfer, never income/expense).
  */
-function buildReportData_(src, year, month, now) {
+function buildReportData_(src, year, month, now, filter) {
   const start = new Date(year, month, 1);
   const end = new Date(year, month + 1, 1);
   const cutoff = now && now < end ? now : end; // overdue / balances: today for the current month
@@ -77,9 +81,14 @@ function buildReportData_(src, year, month, now) {
   const amt = function (r) { return Number(r['amount']) || 0; };
   const sum = function (list, f) { return list.reduce(function (s, x) { return s + (f ? f(x) : x); }, 0); };
   const str = function (v) { return String(v === undefined || v === null ? '' : v).trim(); };
+  const inFilter = {};
+  if (filter) filter.wallets.forEach(function (w) { inFilter[w] = true; });
+  const inF = function (name) { return !filter || inFilter[str(name)] === true; };
+  // The rows of the filtered wallets (all rows when not filtered)
+  const own = filter ? inMonth.filter(function (r) { return inF(r['wallet']); }) : inMonth;
 
-  const incomeRows = inMonth.filter(countsAsIncome_);
-  const expenseRows = inMonth.filter(countsAsExpense_);
+  const incomeRows = own.filter(countsAsIncome_);
+  const expenseRows = own.filter(countsAsExpense_);
   const income = sum(incomeRows, amt);
   const expense = sum(expenseRows, amt);
 
@@ -94,7 +103,7 @@ function buildReportData_(src, year, month, now) {
   });
 
   // Adjustments (In = +, Out = −), excluded from income / expense
-  const adjRows = inMonth.filter(function (r) { return str(r['type']) === 'Adjustment'; });
+  const adjRows = own.filter(function (r) { return str(r['type']) === 'Adjustment'; });
   const adjustments = sum(adjRows, function (r) { return str(r['direction']) === 'Out' ? -amt(r) : amt(r); });
 
   // Wallets: opening + every row before the month start / before the month end
@@ -107,10 +116,11 @@ function buildReportData_(src, year, month, now) {
     const s = balanceBefore(w, start);
     const e = balanceBefore(w, end);
     return { name: w.name, group: w.group || '(no group)', start: s, end: e, change: e - s, active: w.active };
-  }).filter(function (w) { return w.active || w.start || w.end; });
+  }).filter(function (w) { return (w.active || w.start || w.end) && inF(w.name); });
   const groups = {};
   wallets.forEach(function (w) {
-    const g = groups[w.group] = groups[w.group] || { name: w.group, start: 0, end: 0 };
+    const gName = filter ? filter.label : w.group; // filtered: one subtotal for the filter
+    const g = groups[gName] = groups[gName] || { name: gName, start: 0, end: 0 };
     g.start += w.start;
     g.end += w.end;
   });
@@ -119,6 +129,12 @@ function buildReportData_(src, year, month, now) {
   const moves = {};
   inMonth.forEach(function (r) {
     if (str(r['direction']) !== 'Transfer') return;
+    if (filter) { // money moving into / out of the filtered wallets, wallet by wallet
+      const a = str(r['wallet']), b = str(r['to wallet']);
+      if (inF(a) === inF(b)) return;
+      moves[a + ' → ' + b] = (moves[a + ' → ' + b] || 0) + amt(r);
+      return;
+    }
     const from = groupOf[str(r['wallet'])], to = groupOf[str(r['to wallet'])];
     if (!from || !to || from === to) return;
     moves[from + ' → ' + to] = (moves[from + ' → ' + to] || 0) + amt(r);
@@ -159,18 +175,51 @@ function buildReportData_(src, year, month, now) {
   const summary = invSummary_(src.investments, src.sales);
   const portfolio = sum(summary, function (c) { return c.value; });
   const salesInMonth = src.sales.filter(function (s) { return s.date && s.date >= start && s.date < end && invById[s.invId]; });
+  // Opening value per category: Price_History Month-End rows of the previous month's last day (written by closing)
+  const prevLast = new Date(year, month, 0);
+  const sameDay = function (d) {
+    return d instanceof Date && d.getFullYear() === prevLast.getFullYear() && d.getMonth() === prevLast.getMonth() && d.getDate() === prevLast.getDate();
+  };
+  const catOfInv = function (id, asset) {
+    if (invById[id]) return invById[id].category;
+    const same = src.investments.filter(function (x) { return asset && x.asset.toLowerCase() === asset.toLowerCase(); })[0];
+    return same ? same.category : '(other)';
+  };
+  const openingByCat = {};
+  let hasOpening = false;
+  (src.prices || []).forEach(function (p) {
+    if (str(p['month-end']).toLowerCase() !== 'yes' || !sameDay(p['date'])) return;
+    const c = catOfInv(str(p['inv id']), str(p['asset name']));
+    openingByCat[c] = (openingByCat[c] || 0) + (Number(p['value']) || 0);
+    hasOpening = true;
+  });
+  const invCats = summary.map(function (c) {
+    const opening = hasOpening ? openingByCat[c.name] || 0 : null;
+    return { name: c.name, opening: opening, value: c.value, change: opening === null ? null : c.value - opening,
+      cost: c.cost, unrealized: c.unrealized, unrealizedPct: c.cost ? c.unrealized / c.cost : null };
+  });
+  Object.keys(openingByCat).sort().forEach(function (k) { // held at the start, gone from the summary now
+    if (summary.some(function (c) { return c.name === k; })) return;
+    invCats.push({ name: k, opening: openingByCat[k], value: 0, change: -openingByCat[k], cost: 0, unrealized: 0, unrealizedPct: null });
+  });
+  const invCost = sum(summary, function (c) { return c.cost; });
+  const invUnrealized = sum(summary, function (c) { return c.unrealized; });
+  const prevPortfolio = src.prev && src.prev.portfolio !== null && src.prev.portfolio !== undefined ? src.prev.portfolio : null;
   const investments = {
     invested: sum(inMonth.filter(function (r) { return str(r['type']) === 'Investment Buy'; }), amt),
     sold: sum(inMonth.filter(function (r) { return str(r['type']) === 'Investment Sell'; }), amt),
     value: portfolio,
-    unrealized: sum(summary, function (c) { return c.unrealized; }),
+    // Opening: the Month-End rows when there are any, else last month's Monthly Report Portfolio Value (or null)
+    opening: hasOpening ? sum(Object.keys(openingByCat), function (k) { return openingByCat[k]; }) : prevPortfolio,
+    cost: invCost,
+    unrealized: invUnrealized,
+    unrealizedPct: invCost ? invUnrealized / invCost : null,
     realized: sum(salesInMonth, function (s) {
       const x = invById[s.invId];
       return s.qty * lotMult_(x.unit) * (s.price - x.price) - s.fee;
     }),
-    change: src.prev && src.prev.portfolio !== null && src.prev.portfolio !== undefined ? portfolio - src.prev.portfolio : null,
-    categories: summary.map(function (c) { return { name: c.name, value: c.value, unrealized: c.unrealized }; })
-      .filter(function (c) { return c.value > 0; })
+    change: prevPortfolio === null ? null : portfolio - prevPortfolio,
+    categories: invCats.filter(function (c) { return c.value > 0 || c.opening; })
   };
 
   const cashEnd = sum(wallets, function (w) { return w.end; });
@@ -189,10 +238,14 @@ function buildReportData_(src, year, month, now) {
     : (src.categories || []).filter(function (c) { return c.type === 'Expense' && c.budget > 0; }).map(function (c) {
       return { name: c.name, budget: c.budget, spent: sum(expenseRows.filter(function (r) { return str(r['category']) === c.name; }), amt) };
     });
+  budgets.forEach(function (b) { // same Under / At / Over rule as Budget_History
+    b.remaining = b.budget - b.spent;
+    b.status = b.spent > b.budget ? 'Over' : b.spent === b.budget ? 'At' : 'Under';
+  });
 
   // By user (Logged By)
   const users = {};
-  inMonth.forEach(function (r) {
+  own.forEach(function (r) {
     const u = str(r['logged by']) || '(unknown)';
     const x = users[u] = users[u] || { name: u, income: 0, expense: 0, count: 0 };
     x.count++;
@@ -202,7 +255,9 @@ function buildReportData_(src, year, month, now) {
 
   return {
     year: year, month: month, key: monthKey_(year, month), label: monthLabel_(year, month, true),
-    income: income, expense: expense, net: income - expense, count: inMonth.length,
+    filter: filter ? { label: filter.label, wallets: filter.wallets.slice() } : null,
+    income: income, expense: expense, net: income - expense,
+    count: filter ? inMonth.filter(function (r) { return inF(r['wallet']) || (str(r['to wallet']) && inF(r['to wallet'])); }).length : inMonth.length,
     prev: src.prev || null, adjustments: adjustments, adjustmentCount: adjRows.length,
     categories: categories, top: top, wallets: wallets,
     groups: Object.keys(groups).sort().map(function (k) { const g = groups[k]; g.change = g.end - g.start; return g; }),
@@ -224,17 +279,35 @@ function changePct_(now, before) {
   return p === 0 ? '=' : (p > 0 ? '▲' : '▼') + Math.abs(p) + '%';
 }
 
+/** " (+5,2%)" / " (−3%)" for a ratio (0.052), or '' when there is none. Not an amount, so never hidden. */
+function reportPct_(ratio) {
+  if (ratio === null || ratio === undefined || !isFinite(ratio)) return '';
+  return ' (' + (ratio < 0 ? '−' : '+') + formatNumId_(Math.abs(ratio * 100), 1) + '%)';
+}
+
+/** A budget's remaining amount (negative = over) for the chat, through the spoiler helper. */
+function budgetRemainingText_(b, hide) {
+  return b.remaining < 0 ? spoiler_('−' + formatRp_(-b.remaining), hide) : money_(b.remaining, hide);
+}
+
 /** The chat summary. state = 'closed' | 'live'; link = the archive Report tab (closed months). */
 function formatReportText_(r, hide, state, link) {
   const m = function (n) { return money_(n, hide); };
   const signed = function (n) { return n < 0 ? spoiler_('−' + formatRp_(-n), hide) : spoiler_('+' + formatRp_(n), hide); };
+  const orDash = function (n, f) { return n === null || n === undefined ? '—' : f(n); };
+  const f = r.filter;
   // An earlier month that isn't closed yet: debts, investments and net worth are today's values, not its month end.
   const today = new Date();
   const asOf = state === 'live' && monthKey_(r.year, r.month) < monthKey_(today.getFullYear(), today.getMonth()) ? ' <i>(as of today)</i>' : '';
   const L = [];
   L.push('📊 <b>Report · ' + escapeHtml_(r.label) + '</b> ' + (state === 'closed' ? '🔒 closed' : '<i>(open, so far)</i>'));
+  if (f) {
+    L.push('🔎 <b>Filtered: ' + escapeHtml_(f.label) + '</b>' +
+      (f.wallets.length !== 1 || f.wallets[0] !== f.label ? ' (' + escapeHtml_(f.wallets.join(', ')) + ')' : ''),
+      '<i>Only rows of these wallets. Debts, investments, net worth, budgets and favorites are in the full /report.</i>');
+  }
   L.push('💵 Income ' + m(r.income) + ' · 🧾 Expense ' + m(r.expense) + ' · Net ' + signed(r.net));
-  if (r.prev) {
+  if (r.prev && !f) {
     const prevLabel = monthLabel_(r.month === 0 ? r.year - 1 : r.year, (r.month + 11) % 12, false);
     L.push('<i>vs ' + prevLabel + ': income ' + (changePct_(r.income, r.prev.income) || '—') + ', expense ' +
       (changePct_(r.expense, r.prev.expense) || '—') + '</i>');
@@ -254,11 +327,11 @@ function formatReportText_(r, hide, state, link) {
       L.push('• ' + (t.date ? formatDayMonth_(t.date) + ' · ' : '') + escapeHtml_((t.note || t.category).slice(0, 40)) + ' ' + m(t.amount));
     });
   }
-  if (r.budgets.length) {
+  if (r.budgets.length && !f) {
     L.push('', '🎯 <b>Budgets</b>');
     r.budgets.forEach(function (b) {
       L.push('• ' + escapeHtml_(b.name) + ' ' + m(b.spent) + ' of ' + m(b.budget) + ' (' + Math.round(b.spent / b.budget * 100) + '%)' +
-        (b.spent > b.budget ? ' ⚠️' : ''));
+        ' · remaining ' + budgetRemainingText_(b, hide) + ' · ' + b.status + (b.spent > b.budget ? ' ⚠️' : ''));
     });
   }
   if (r.wallets.length) {
@@ -268,36 +341,14 @@ function formatReportText_(r, hide, state, link) {
       L.push('   ' + escapeHtml_(w.name) + ' ' + m(w.end) + (w.change ? ' (' + signed(w.change) + ')' : ''));
     });
   }
+  if (f && r.transfers.length) L.push('', '🔁 <b>Transfers in / out</b> (not income or expense)');
   r.transfers.forEach(function (t) { L.push('🔁 ' + escapeHtml_(t.name) + ' ' + m(t.amount)); });
-
-  const debtLine = function (icon, name, d) {
-    return icon + ' <b>' + name + '</b>: remaining ' + m(d.remaining) + ' (' + d.open + ' open' +
-      (d.overdue ? ', ' + d.overdue + ' overdue ' + m(d.overdueAmount) : '') + ')' +
-      (d.created ? ' · new ' + m(d.created) : '') + (d.paid ? ' · paid ' + m(d.paid) : '') +
-      (d.converted ? ' · converted ' + m(d.converted) : '');
-  };
-  L.push('', debtLine('🤝', 'Piutang', r.piutang) + asOf, debtLine('💳', 'Hutang', r.hutang) + asOf);
-
-  const inv = r.investments;
-  if (inv.value || inv.invested || inv.sold) {
-    L.push('', '📈 <b>Investments</b> ' + m(inv.value) + (inv.change !== null ? ' (' + signed(inv.change) + ' vs last month)' : '') + asOf);
-    L.push('   bought ' + m(inv.invested) + ' · sold ' + m(inv.sold) + ' · unrealized ' + signed(inv.unrealized) +
-      ' · realized this month ' + signed(inv.realized));
-    inv.categories.forEach(function (c) { L.push('   ' + escapeHtml_(c.name) + ' ' + m(c.value) + ' (' + signed(c.unrealized) + ')'); });
-  }
-  L.push('', '🏦 <b>Net worth</b> ' + m(r.netWorth) + ' <i>(cash + investments + piutang − hutang)</i>' + asOf);
-
-  if (r.favorites.length) {
-    const by = function (s) { return r.favorites.filter(function (f) { return f.status === s; }); };
-    const names = function (list) { return list.map(function (f) { return escapeHtml_(f.name); }).join(', '); };
-    L.push('', '⭐ <b>Favorites</b>: ' + by('paid').length + ' paid · ' + by('skipped').length + ' skipped' +
-      (by('not logged').length ? ' · not logged: ' + names(by('not logged')) : ''));
-  }
+  if (!f) formatReportFullOnly_(r, hide, L, asOf, m, signed, orDash);
   if (r.users.length > 1 || (r.users.length === 1 && r.users[0].name !== '(unknown)')) {
     L.push('', '👥 <b>By person</b>');
     r.users.forEach(function (u) { L.push('• ' + escapeHtml_(u.name) + ': income ' + m(u.income) + ' · expense ' + m(u.expense) + ' (' + u.count + ' entries)'); });
   }
-  if (r.closedItems.length) {
+  if (r.closedItems.length && !f) {
     L.push('', '📦 <b>Moved to Closed_History</b>');
     r.closedItems.slice(0, REPORT_LIST_MAX).forEach(function (c) {
       L.push('• ' + escapeHtml_(c.id) + ' ' + escapeHtml_(c.name) + ' · ' + escapeHtml_(c.result) + ' ' + m(c.amount));
@@ -310,6 +361,37 @@ function formatReportText_(r, hide, state, link) {
   return text;
 }
 
+/** The parts of the chat text a filtered report leaves out: debts, investments, net worth, favorites. */
+function formatReportFullOnly_(r, hide, L, asOf, m, signed, orDash) {
+  const debtLine = function (icon, name, d) {
+    return icon + ' <b>' + name + '</b>: remaining ' + m(d.remaining) + ' (' + d.open + ' open' +
+      (d.overdue ? ', ' + d.overdue + ' overdue ' + m(d.overdueAmount) : '') + ')' +
+      (d.created ? ' · new ' + m(d.created) : '') + (d.paid ? ' · paid ' + m(d.paid) : '') +
+      (d.converted ? ' · converted ' + m(d.converted) : '');
+  };
+  L.push('', debtLine('🤝', 'Piutang', r.piutang) + asOf, debtLine('💳', 'Hutang', r.hutang) + asOf);
+
+  const inv = r.investments;
+  if (inv.value || inv.invested || inv.sold || inv.opening) {
+    L.push('', '📈 <b>Investments</b> ' + m(inv.value) + (inv.change !== null ? ' (' + signed(inv.change) + ' vs last month)' : '') + asOf);
+    L.push('   opening ' + orDash(inv.opening, m) + ' → ending ' + m(inv.value) + ' · unrealized ' + signed(inv.unrealized) +
+      reportPct_(inv.unrealizedPct));
+    L.push('   bought ' + m(inv.invested) + ' · sold ' + m(inv.sold) + ' · realized this month ' + signed(inv.realized));
+    inv.categories.forEach(function (c) {
+      L.push('   ' + escapeHtml_(c.name) + ' ' + orDash(c.opening, m) + ' → ' + m(c.value) + ' (' + orDash(c.change, signed) + ')' +
+        ' · unrealized ' + signed(c.unrealized) + reportPct_(c.unrealizedPct));
+    });
+  }
+  L.push('', '🏦 <b>Net worth</b> ' + m(r.netWorth) + ' <i>(cash + investments + piutang − hutang)</i>' + asOf);
+
+  if (r.favorites.length) {
+    const by = function (s) { return r.favorites.filter(function (f) { return f.status === s; }); };
+    const names = function (list) { return list.map(function (f) { return escapeHtml_(f.name); }).join(', '); };
+    L.push('', '⭐ <b>Favorites</b>: ' + by('paid').length + ' paid · ' + by('skipped').length + ' skipped' +
+      (by('not logged').length ? ' · not logged: ' + names(by('not logged')) : ''));
+  }
+}
+
 /** "12 Oct". */
 function formatDayMonth_(date) {
   return Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), 'd MMM');
@@ -319,10 +401,13 @@ function formatDayMonth_(date) {
 function reportSheetRows_(r) {
   const rows = [['Section', 'Item', 'Amount', 'Note']];
   const add = function (s, i, a, n) { rows.push([s, i, a === null || a === undefined ? '' : a, n || '']); };
+  const rpOrDash = function (n) { return n === null || n === undefined ? '—' : formatRp_(n); };
+  const f = r.filter;
+  if (f) add('Summary', 'Filtered: ' + f.label, null, f.wallets.join(', ') + ' only (debts, investments, net worth, budgets: full report)');
   add('Summary', 'Income', r.income);
   add('Summary', 'Expense', r.expense);
   add('Summary', 'Net cash flow', r.net);
-  if (r.prev) {
+  if (r.prev && !f) {
     add('Summary', 'Income vs previous month', r.income - r.prev.income, changePct_(r.income, r.prev.income));
     add('Summary', 'Expense vs previous month', r.expense - r.prev.expense, changePct_(r.expense, r.prev.expense));
   }
@@ -331,12 +416,17 @@ function reportSheetRows_(r) {
   r.top.forEach(function (t, i) {
     add('Top 5 expenses', (i + 1) + '. ' + (t.note || t.category), t.amount, (t.date ? formatDate_(t.date) : '') + ' · ' + t.category + ' · ' + t.wallet);
   });
-  r.budgets.forEach(function (b) {
-    add('Budget', b.name, b.spent, 'of ' + formatRp_(b.budget) + ' (' + Math.round(b.spent / b.budget * 100) + '%)');
+  if (!f) r.budgets.forEach(function (b) {
+    add('Budget', b.name, b.spent, 'of ' + formatRp_(b.budget) + ' (' + Math.round(b.spent / b.budget * 100) + '%) · remaining ' +
+      (b.remaining < 0 ? '−' + formatRp_(-b.remaining) : formatRp_(b.remaining)) + ' · ' + b.status + (b.spent > b.budget ? ' ⚠️' : ''));
   });
   r.groups.forEach(function (g) { add('Wallet group', g.name, g.end, 'start ' + formatRp_(g.start) + ', change ' + formatRp_(g.change)); });
   r.wallets.forEach(function (w) { add('Wallet', w.name + ' (' + w.group + ')', w.end, 'start ' + formatRp_(w.start) + ', change ' + formatRp_(w.change)); });
-  r.transfers.forEach(function (t) { add('Transfers between groups', t.name, t.amount); });
+  r.transfers.forEach(function (t) { add(f ? 'Transfers in / out' : 'Transfers between groups', t.name, t.amount); });
+  if (f) {
+    r.users.forEach(function (u) { add('By person', u.name, u.expense, 'income ' + formatRp_(u.income) + ', ' + u.count + ' entries'); });
+    return rows;
+  }
   [['Hutang', r.hutang], ['Piutang', r.piutang]].forEach(function (x) {
     const d = x[1];
     add(x[0], 'New this month', d.created);
@@ -348,10 +438,14 @@ function reportSheetRows_(r) {
   const inv = r.investments;
   add('Investments', 'Bought this month', inv.invested);
   add('Investments', 'Sold this month', inv.sold);
+  add('Investments', 'Opening value', inv.opening === null ? '—' : inv.opening, 'portfolio value at the start of the month');
   add('Investments', 'Portfolio value', inv.value, inv.change !== null ? 'change vs previous month ' + formatRp_(inv.change) : '');
-  add('Investments', 'Unrealized gain/loss', inv.unrealized);
+  add('Investments', 'Unrealized gain/loss', inv.unrealized, reportPct_(inv.unrealizedPct).replace(/^ \(|\)$/g, ''));
   add('Investments', 'Realized gain/loss this month', inv.realized);
-  inv.categories.forEach(function (c) { add('Investments by category', c.name, c.value, 'unrealized ' + formatRp_(c.unrealized)); });
+  inv.categories.forEach(function (c) {
+    add('Investments by category', c.name, c.value, 'opening ' + rpOrDash(c.opening) + ', change ' + rpOrDash(c.change) +
+      ', unrealized ' + formatRp_(c.unrealized) + reportPct_(c.unrealizedPct));
+  });
   add('Net worth', 'Cash wallets', r.cash);
   add('Net worth', 'Investments', inv.value);
   add('Net worth', 'Piutang', r.piutang.remaining);

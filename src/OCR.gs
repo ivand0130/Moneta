@@ -458,8 +458,182 @@ function handlePhoto_(message) {
   if (!file) return;
   const job = { chatId: chatId, fileId: file.file_id, mime: (message.document && message.document.mime_type) || 'image/jpeg',
     caption: message.caption || '', at: Date.now() };
-  job.msgId = sendMessage(chatId, '🔍 Reading the bill…').message_id;
-  runOcrJob_(job, cleanupTriggerInstalled_());
+  // Another photo of this chat is being read or waits for Yes (e.g. the rest of an album): this one waits its turn.
+  let queued = null;
+  try {
+    queued = queuePhotoIfBusy_(chatId, job, message);
+  } catch (err) {
+    logError_('queuePhotoIfBusy_', err); // can't tell → read it right away (as before)
+  }
+  if (queued) return announcePhotos_(chatId, queued);
+  readPhoto_(job, cleanupTriggerInstalled_());
+  startNextPhoto_(chatId, job.at + 25000); // this one couldn't be read (no preview): the next one, if any
+}
+
+// ---------------------------------------------------------------------------
+// Several photos at once (an album, or a photo while another photo's preview waits)
+// ---------------------------------------------------------------------------
+// A chat has one preview at a time (newPending_ disarms the older one), so the
+// later photos wait here and are read one after another: the next starts when
+// the current photo's preview is finished (saved, cancelled or expired), i.e.
+// when the chat has no pending item. Started from the end of a button tap
+// (handleCallback_) or by the 1-minute cleanup trigger (text answers, expiry).
+// State, like the OCR queue: Script Property PHOTO_QUEUE
+//   { <chatId>: { active: { fileId, at, read }, q: [{ fileId, mime, caption, group, photoMsgId }], n, noticeId, noticeAt } }
+// + a cache flag 'photo_queue' ('[]' = no photo waiting in any chat, so the trigger exits at once).
+// If the state is lost, a waiting photo is simply not shown: the user sends it again.
+
+const PHOTO_QUEUE_PROP = 'PHOTO_QUEUE';
+const PHOTO_QUEUE_MAX = 10;              // a Telegram album holds at most 10 photos
+const PHOTO_READ_STALE_MS = 10 * 60000;  // a read that never reported back (the run died) stops blocking after this
+
+function readPhotoQueue_() {
+  try {
+    const all = JSON.parse(getProp_(PHOTO_QUEUE_PROP) || '{}');
+    return all && typeof all === 'object' ? all : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function writePhotoQueue_(all) {
+  const now = Date.now();
+  Object.keys(all).forEach(function (c) { // nothing waiting and the last photo is old → forget the chat
+    if (!all[c].q.length && (!all[c].active || now - all[c].active.at > 3600000)) delete all[c];
+  });
+  const chats = Object.keys(all);
+  const props = PropertiesService.getScriptProperties();
+  if (chats.length) props.setProperty(PHOTO_QUEUE_PROP, JSON.stringify(all));
+  else props.deleteProperty(PHOTO_QUEUE_PROP);
+  CacheService.getScriptCache().put('photo_queue', chats.some(function (c) { return all[c].q.length; }) ? 'x' : '[]', 21600);
+}
+
+/** True while this chat's last photo is still being read (and not given up on). */
+function photoReading_(st) {
+  return !!(st && st.active && !st.active.read && Date.now() - st.active.at < PHOTO_READ_STALE_MS);
+}
+
+/**
+ * Under the lock: queues the photo if one is ahead of it (photos already
+ * waiting, a photo being read, or a photo's preview waiting for Yes) and
+ * returns what to tell the user; otherwise marks it as the one being read
+ * and returns null (read it now).
+ */
+function queuePhotoIfBusy_(chatId, job, message) {
+  return withScriptLock_(function () {
+    const all = readPhotoQueue_();
+    const st = all[chatId] || { q: [], n: 0 };
+    all[chatId] = st;
+    const p = getPending_(chatId);
+    const photoPreview = !!(p && (p.kind === 'ocr' || (p.d && p.d.image)));
+    if (!st.q.length && !photoReading_(st) && !photoPreview) {
+      st.active = { fileId: job.fileId, at: Date.now(), read: false };
+      writePhotoQueue_(all);
+      return null;
+    }
+    if (st.q.length >= PHOTO_QUEUE_MAX) return { full: true };
+    if (!st.q.length) { st.n = 1; st.noticeId = null; st.noticeAt = 0; } // a new batch: the photo ahead is number 1
+    st.q.push({ fileId: job.fileId, mime: job.mime, caption: String(job.caption).slice(0, 200),
+      group: String(message.media_group_id || ''), photoMsgId: message.message_id });
+    st.n++;
+    if (JSON.stringify(all).length > 6000) return { full: true }; // Script Property values max 9 KB (not written)
+    const send = !st.noticeId && !st.noticeAt; // the first waiting photo sends the notice, later ones edit it
+    if (send) st.noticeAt = Date.now();
+    writePhotoQueue_(all);
+    return { n: st.n, noticeId: st.noticeId, send: send };
+  });
+}
+
+/** "📚 Got N photos": sent once per batch, then edited as more photos arrive. */
+function announcePhotos_(chatId, r) {
+  if (r.full) return sendMessage(chatId, '📚 Too many photos are waiting. Send this one again when the others are done.');
+  const text = function (n) { return '📚 Got ' + n + " photos — I'll show them one at a time."; };
+  if (!r.send) return r.noticeId ? editMessage(chatId, r.noticeId, text(r.n)) : null;
+  const id = sendMessage(chatId, text(r.n)).message_id;
+  const latest = withScriptLock_(function () {
+    const all = readPhotoQueue_();
+    const st = all[chatId];
+    if (!st || !st.q.length) return null;
+    st.noticeId = id;
+    writePhotoQueue_(all);
+    return st.n;
+  });
+  if (latest && latest !== r.n) editMessage(chatId, id, text(latest)); // more arrived while sending
+}
+
+/**
+ * Reads one photo (sends "Reading the bill…" first unless job.msgId is set)
+ * and then marks it as read, unless its AI step was handed to the cleanup
+ * trigger (processOcrQueue_ marks it then).
+ */
+function readPhoto_(job, mayQueue, firstLine) {
+  let queued = false;
+  try {
+    if (!job.msgId) {
+      job.msgId = sendMessage(job.chatId, (firstLine || '') + '🔍 Reading the bill…', job.photoMsgId
+        ? { reply_parameters: { message_id: job.photoMsgId, allow_sending_without_reply: true } } : {}).message_id;
+    }
+    queued = runOcrJob_(job, mayQueue) === 'queued';
+  } finally {
+    if (!queued) photoReadDone_(job.chatId, job.fileId);
+  }
+}
+
+/** The photo has been read (its preview, or an error, is shown). Never throws. */
+function photoReadDone_(chatId, fileId) {
+  try {
+    if (CacheService.getScriptCache().get('photo_queue') === '[]' && !getProp_(PHOTO_QUEUE_PROP)) return;
+    withScriptLock_(function () {
+      const all = readPhotoQueue_();
+      const st = all[chatId];
+      if (!st || !st.active || st.active.fileId !== fileId || st.active.read) return;
+      st.active.read = true;
+      writePhotoQueue_(all);
+    });
+  } catch (err) {
+    logError_('photoReadDone_', err);
+  }
+}
+
+/**
+ * Starts this chat's next waiting photo once the current one is finished
+ * (read, and no pending item left). Keeps going while a photo ends without a
+ * preview (unreadable) and time is left. Never throws.
+ */
+function startNextPhoto_(chatId, deadline) {
+  try {
+    while (Date.now() < deadline) {
+      if (CacheService.getScriptCache().get('photo_queue') === '[]') return; // nothing waiting anywhere
+      if (getPending_(chatId)) return; // a preview (or another question) still waits
+      const next = withScriptLock_(function () {
+        const all = readPhotoQueue_();
+        const st = all[chatId];
+        if (!st || !st.q.length || photoReading_(st) || getPending_(chatId)) return null;
+        const item = st.q.shift();
+        st.active = { fileId: item.fileId, at: Date.now(), read: false };
+        const pos = st.n - st.q.length;
+        writePhotoQueue_(all);
+        return Object.assign({ pos: pos, n: st.n }, item);
+      });
+      if (!next) return;
+      const job = { chatId: String(chatId), fileId: next.fileId, mime: next.mime, caption: next.caption || '',
+        photoMsgId: next.photoMsgId, at: Date.now() };
+      readPhoto_(job, cleanupTriggerInstalled_() && deadline - Date.now() < 3 * 60000, '📚 Photo ' + next.pos + ' of ' + next.n + '\n');
+    }
+  } catch (err) {
+    logError_('startNextPhoto_', err);
+  }
+}
+
+/** Cleanup trigger: start the next photo in every chat whose current one is finished. */
+function startQueuedPhotos_(deadline) {
+  const all = readPhotoQueue_();
+  const chats = Object.keys(all).filter(function (c) { return all[c].q && all[c].q.length; });
+  if (!chats.length) {
+    CacheService.getScriptCache().put('photo_queue', '[]', 21600); // the flag was lost: nothing waits
+    return;
+  }
+  chats.forEach(function (c) { startNextPhoto_(c, deadline); });
 }
 
 /** Hands a job (with the OCR text already read) to the cleanup trigger for the AI step. */
@@ -502,14 +676,23 @@ function writeOcrQueue_(queue) {
  */
 function processOcrQueue_() {
   const cache = CacheService.getScriptCache();
-  if (cache.get('ocr_queue') === '[]' && cache.get('ocr_running') === '[]') return;
+  const ocrIdle = cache.get('ocr_queue') === '[]' && cache.get('ocr_running') === '[]';
+  const photosIdle = cache.get('photo_queue') === '[]';
+  if (ocrIdle && photosIdle) return;
   const started = Date.now();
+  if (!ocrIdle) runOcrQueue_(started);
+  if (!photosIdle) startQueuedPhotos_(started + 4 * 60000); // album photos waiting for the previous preview
+}
+
+function runOcrQueue_(started) {
+  const cache = CacheService.getScriptCache();
   let jobs = [];
+  let stale = [];
   withScriptLock_(function () {
     jobs = readOcrQueue_();
     if (jobs.length) writeOcrQueue_([]);
     const running = JSON.parse(getProp_(PROP.OCR_RUNNING) || '[]');
-    const stale = running.filter(function (j) { return started - j.startedAt > 7 * 60000; });
+    stale = running.filter(function (j) { return started - j.startedAt > 7 * 60000; });
     stale.forEach(function (j) {
       try {
         editMessage(j.chatId, j.msgId, '⚠️ Reading this bill took too long (the AI did not answer). Send it again, or type the entry, ' +
@@ -522,13 +705,14 @@ function processOcrQueue_() {
     PropertiesService.getScriptProperties().setProperty(PROP.OCR_RUNNING, JSON.stringify(keep));
     cache.put('ocr_running', keep.length ? 'x' : '[]', 21600);
   });
+  stale.forEach(function (j) { photoReadDone_(j.chatId, j.fileId); }); // given up: the next photo may start
   jobs.forEach(function (job, i) {
     if (Date.now() - started > 4 * 60000) {
       withScriptLock_(function () { writeOcrQueue_(readOcrQueue_().concat(jobs.slice(i))); }); // next minute
       jobs.length = i;
       return;
     }
-    runOcrJob_(job);
+    readPhoto_(job, false);
     withScriptLock_(function () {
       const running = JSON.parse(getProp_(PROP.OCR_RUNNING) || '[]').filter(function (j) { return j.msgId !== job.msgId || j.chatId !== job.chatId; });
       PropertiesService.getScriptProperties().setProperty(PROP.OCR_RUNNING, JSON.stringify(running));
@@ -569,7 +753,7 @@ function runOcrJob_(job, mayQueue) {
     let ocr = text ? normalizeOcr_(parseOcrText_(text)) : null;
     if (ocr) step('rules: total ' + ocr.total + ' · ' + ocr.participants.length + ' people · ' + ocr.merchant);
     if (!ocrRulesOk_(ocr) && getSettingYes_(SETTING.AI_ENABLED)) {
-      if (mayQueue) return queueOcrJob_(Object.assign({}, job, { text: text }));
+      if (mayQueue) { queueOcrJob_(Object.assign({}, job, { text: text })); return 'queued'; }
       let ai = null;
       try {
         if (text) {
@@ -961,6 +1145,7 @@ function receiptsMonthFolder_(date) {
     const found = parent.getFoldersByName('Receipts');
     root = found.hasNext() ? found.next() : parent.createFolder('Receipts');
     PropertiesService.getScriptProperties().setProperty(PROP.RECEIPTS_FOLDER_ID, root.getId());
+    try { setSettingValue_(openMainSheet_(), 'Receipts Folder ID', root.getId()); } catch (err) { /* info row only */ }
   }
   const month = Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), 'yyyy-MM');
   const sub = root.getFoldersByName(month);
@@ -1032,6 +1217,7 @@ function setReceiptsFolder_(chatId, args) {
   try {
     const folder = DriveApp.getFolderById(id);
     PropertiesService.getScriptProperties().setProperty(PROP.RECEIPTS_FOLDER_ID, id);
+    try { setSettingValue_(openMainSheet_(), 'Receipts Folder ID', id); } catch (err) { /* info row only */ }
     sendMessage(chatId, '✅ Receipt images now go to <b>' + escapeHtml_(folder.getName()) + '</b> (one subfolder per month).');
   } catch (err) {
     sendMessage(chatId, "⚠️ I can't open that folder. Make sure the link is a Drive folder that your Google account (the bot's owner) can edit.");

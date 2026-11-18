@@ -1009,7 +1009,10 @@ function handleCallback_(cq) {
   else if (p.kind === 'ocr') ocrCallback_(p, action, arg, getUserByChatId_(chatId));
   else if (p.kind === 'undoimg') undoImageCallback_(p, action);
   else if (p.kind === 'close') closingCallback_(p, action);
-  else if (p.kind === 'sheet') sheetCallback_(p, action);}
+  else if (p.kind === 'sheet') sheetCallback_(p, action);
+  // A photo of an album waits for this preview: start it once the tap finished the flow (OCR.gs).
+  startNextPhoto_(chatId, Date.now() + 25000);
+}
 
 /** Friendly reply for a message the parser couldn't use. */
 function parseErrorText_(r) {

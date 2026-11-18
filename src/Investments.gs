@@ -40,6 +40,7 @@ const INV_TOTAL_WORDS = ['total', 'senilai', 'sebesar', 'seharga', 'sejumlah'];
 const INV_FEE_WORDS = ['fee', 'admin', 'biaya', 'komisi'];
 const INV_PLATFORM_WORDS = ['via', 'lewat', 'platform', 'di'];
 const INV_ALL_WORDS = ['semua', 'all', 'semuanya'];
+const INV_ASSET_CHOICES = 6; // "Asset name?" buttons for "beli emas …" (most recent assets of the category)
 const INV_FILLERS = ['ke', 'dari', 'to', 'from', 'pakai', 'pake', 'broker', 'per', 'sebanyak', 'aset', 'asset'];
 const SHARES_PER_LOT = 100;
 
@@ -487,12 +488,14 @@ function parseInvestment_(text, ctx) {
   const iwCats = walletCategories_(iw);
   const category = catWords.length ? catWords[0].wallets[0].name : asset ? asset.category : (iwCats.length === 1 ? iwCats[0] : '');
   let assetName = asset ? asset.name : rest.join(' ').trim();
-  if (!assetName && category) assetName = category; // "beli emas 2gr …" → asset "Emas"
+  // "beli emas 2gr …" names only the category: the buy flow asks the asset name (the category is one button).
+  const assetFromCategory = !assetName && !!category;
+  if (assetFromCategory) assetName = category;
   if (!assetName) return { ok: false, error: 'inv_no_asset', kind: kind };
   if (kind === 'buy' && rest.length && asset) return { ok: false, error: 'inv_extra_words', words: rest };
   const wallet = cashMentions.length ? cashMentions[0] : null;
   const out = {
-    ok: true, kind: kind, asset: assetName, assetKnown: !!asset, category: category, invWallet: invWallet, invWalletGiven: !!pickedWallet,
+    ok: true, kind: kind, asset: assetName, assetKnown: !!asset, assetFromCategory: kind === 'buy' && assetFromCategory, category: category, invWallet: invWallet, invWalletGiven: !!pickedWallet,
     invWalletChoices: !invWallet && catWallets.length > 1 ? catWallets.map(function (w) { return w.name; }) : null,
     unit: unitFor_(ctx.wallets, invWallet, asset ? asset.unit : '', nums.qtyUnit),
     qty: nums.qty, qtyUnit: nums.qtyUnit, price: nums.price, priceSuffix: nums.priceSuffix, total: nums.total,
@@ -606,7 +609,7 @@ function saleGain_(parts, price, fee) {
  * new total value of that asset.
  */
 function parseInvUpdate_(text, investments) {
-  const out = { items: [], unknown: [], bad: [] };
+  const out = { items: [], unknown: [], bad: [], unknownPrices: {} };
   const holding = investments.filter(function (x) { return x.holding && x.id; });
   String(text || '').split(/\n|;/).map(function (l) { return l.trim(); }).filter(String).forEach(function (line) {
     const tokens = tokenize_(normalizeInvText_(line));
@@ -627,7 +630,11 @@ function parseInvUpdate_(text, investments) {
     const key = name.toLowerCase();
     let rows = holding.filter(function (x) { return x.asset.toLowerCase() === key; });
     if (rows.length === 0) rows = holding.filter(function (x) { return x.category.toLowerCase() === key; });
-    if (rows.length === 0) { out.unknown.push(name); return; }
+    if (rows.length === 0) {
+      out.unknown.push(name);
+      out.unknownPrices[name] = tokens.slice(tokens.length - used).map(function (t) { return t.raw; }).join('');
+      return;
+    }
     const units = rows.map(function (x) { return x.unit; }).filter(function (u, i, a) { return a.indexOf(u) === i; });
     if (units.length > 1) { out.bad.push(line + ' (mixed units: write the asset names)'); return; }
     const unit = units[0];
@@ -846,7 +853,7 @@ function advanceBuy_(p, ctx) {
       return btn_(p, w.name + (cats && cats !== w.name ? ' · ' + cats : ''), 'ic', i);
     }), 2);
     rows.push(cancelRow_(p));
-    return showStep_(p, '📈 ' + escapeHtml_(d.asset) + (d.assetKnown ? '' : ' is new.') + ' Which investment wallet holds it?', rows);
+    return showStep_(p, '📈 ' + escapeHtml_(d.asset) + (d.assetKnown || d.assetFromCategory ? '' : ' is new.') + ' Which investment wallet holds it?', rows);
   }
   const iw = findWallet_(invWallets, d.invWallet);
   const cats = walletCategories_(iw);
@@ -860,6 +867,8 @@ function advanceBuy_(p, ctx) {
         escapeHtml_(d.asset) + '?', rows);
     }
   }
+  // Only a category was named ("beli emas …"): which asset? (asked once)
+  if (d.assetFromCategory && !d.assetAsked) return askInvAsset_(p, ctx);
   // The category's Wallet Type sets the unit (Emas → gr, Saham → lembar); Others: typed, else "unit".
   const asset = knownAssets_(ctx.investments).filter(function (a) { return a.name.toLowerCase() === d.asset.toLowerCase(); })[0];
   d.unit = unitFor_(ctx.wallets, d.invWallet, asset ? asset.unit : '', d.in.qtyUnit) || 'unit';
@@ -898,6 +907,42 @@ function advanceBuy_(p, ctx) {
 
 function invSummaryLine_(d) {
   return '📈 ' + (d.mode === 'sell' ? 'Sell ' : 'Buy ') + escapeHtml_(d.asset) + (d.qty !== null ? ' · ' + formatQty_(d.qty, d.unit) : '');
+}
+
+/**
+ * Asset names bought before in a category (Investments tab), most recent first,
+ * without the category name itself. Pure; tested by testInvParser.
+ */
+function categoryAssets_(investments, category, max) {
+  const key = String(category || '').toLowerCase();
+  const rows = investments.filter(function (x) { return x.asset && String(x.category || '').toLowerCase() === key; })
+    .sort(function (a, b) { return (b.date ? b.date.getTime() : 0) - (a.date ? a.date.getTime() : 0) || b.row - a.row; });
+  const names = [];
+  rows.forEach(function (x) {
+    if (x.asset.toLowerCase() === key) return;
+    if (names.some(function (n) { return n.toLowerCase() === x.asset.toLowerCase(); })) return;
+    if (names.length < max) names.push(x.asset);
+  });
+  return names;
+}
+
+/** "beli emas …" without an asset: [Antam] [UBS] … [Emas] [✏️ Other]. */
+function askInvAsset_(p, ctx) {
+  const d = p.d;
+  const names = categoryAssets_(ctx.investments, d.category, INV_ASSET_CHOICES);
+  p.opts = names.concat([d.category]);
+  const rows = chunk_(names.map(function (n, i) { return btn_(p, n, 'an', i); }), 3);
+  rows.push([btn_(p, '🏷 Just "' + d.category + '"', 'an', names.length), btn_(p, '✏️ Other', 'ao')]);
+  rows.push(cancelRow_(p));
+  showStep_(p, '📈 Buy ' + escapeHtml_(d.category) + '\nAsset name?' + (names.length ? '' : ' Tap ✏️ Other to type one (e.g. <code>Antam</code>), or keep the category name.'), rows);
+}
+
+/** Sets the asset picked or typed for "beli emas …" (a known name keeps its spelling). */
+function setInvAsset_(d, name, investments) {
+  const known = knownAssets_(investments).filter(function (a) { return a.name.toLowerCase() === name.toLowerCase(); })[0];
+  d.asset = known ? known.name : name;
+  d.assetKnown = !!known;
+  d.assetAsked = true;
 }
 
 function askInvNumbers_(p) {
@@ -1065,6 +1110,8 @@ function advanceSell_(p, ctx) {
   const buttons = [[btn_(p, '✅ Yes', 'y'), btn_(p, '❌ No', 'n')], [btn_(p, '👛 To', 'ew'), btn_(p, '📅 Date', 'ed')]];
   if (d.holders > 1) buttons[1].unshift(btn_(p, '📈 From', 'es'));
   if (rows.length > 1) buttons[1].push(d.picked ? btn_(p, '↩️ FIFO', 'fifo') : btn_(p, '🔀 Choose rows', 'pr'));
+  // Fee: none by default (a wallet's Default Transfer Fee is for transfers, not sales); typed or entered here.
+  buttons.splice(1, 0, d.fee ? [btn_(p, '💸 Change fee', 'ef'), btn_(p, '🚫 No fee', 'nf')] : [btn_(p, '💸 Enter fee', 'ef')]);
   showStep_(p, buildSellPreview_(d, alloc.parts, held), buttons);
 }
 
@@ -1080,7 +1127,7 @@ function buildSellPreview_(d, parts, held) {
     lines.push('• ' + escapeHtml_(x.inv.id) + ' · ' + (x.inv.date ? formatDate_(x.inv.date) + ' · ' : '') + formatQty_(x.qty, d.unit) +
       (d.unit === 'nominal' ? '' : ' bought at ' + formatInvPrice_(x.inv.price, d.unit)));
   });
-  if (fee) lines.push('Fee ' + formatRp_(fee));
+  lines.push('Fee: ' + (fee ? formatRp_(fee) : 'none'));
   lines.push('👛 ' + escapeHtml_(d.invWallet) + ' → ' + escapeHtml_(d.wallet) + ' <b>' + formatRpSigned_(d.total - fee) + '</b>' +
     (d.walletHow === 'last' ? ' <i>(last used)</i>' : d.walletHow === 'only' ? ' <i>(your only investment wallet)</i>' : ''));
   lines.push('💹 Realized gain: <b>' + formatRpSigned_(Math.round(gain)) + '</b>');
@@ -1095,6 +1142,16 @@ function invCallback_(p, action, arg, user) {
   switch (action) {
     case 'ic': d.invWallet = p.opts[Number(arg)]; d.invWalletChoices = null; break;
     case 'icat': d.category = p.opts[Number(arg)]; break;
+    case 'an': setInvAsset_(d, p.opts[Number(arg)], ctx.investments); break; // buy "beli emas …": asset picked
+    case 'ao':                                                              // …or typed
+      p.awaitText = 'asset';
+      return showStep_(p, '📈 Buy ' + escapeHtml_(d.category) + '\nType the asset name, e.g. <code>Antam</code>.', [cancelRow_(p)]);
+    case 'ef':                                                              // sell: enter / change the fee
+      p.awaitText = 'fee';
+      return showStep_(p, invSummaryLine_(d) + '\nHow much was the fee? e.g. <code>5rb</code> or <code>12.500</code>',
+        [[btn_(p, '🚫 No fee', 'nf')], cancelRow_(p)]);
+    case 'nf': d.fee = 0; break;
+    case 'cr': return invCreateHint_(p, ctx);                               // /inv update: unknown asset → how to buy it
     case 'et': d.invWallet = null; d.invWalletChoices = null; break;        // buy: choose another investment wallet
     case 'ec': {                                                            // buy: choose another category of the wallet
       const w = findWallet_(ctx.wallets, d.invWallet);
@@ -1160,6 +1217,15 @@ function handleInvText_(p, message) {
     const date = parseDateOnly_(text, new Date());
     if (date === null) return sendMessage(p.chatId, "I couldn't read that date. Try <code>kemarin</code> or <code>20/09</code>.");
     d.date = date.getTime();
+  } else if (p.awaitText === 'asset') {
+    const name = text.replace(/\s+/g, ' ').trim();
+    if (!name || name.length > 60) return sendMessage(p.chatId, 'Send a short asset name, e.g. <code>Antam</code>, or /cancel.');
+    setInvAsset_(d, name, invCtx_(false).investments);
+  } else if (p.awaitText === 'fee') {
+    const fee = readInvFee_(text);
+    if (fee === null) return sendMessage(p.chatId, "I couldn't read that fee. Try <code>5rb</code>, or /cancel.");
+    if (fee >= d.total) return sendMessage(p.chatId, 'The fee must be less than the sale total (' + formatRp_(d.total) + '). Try again, or /cancel.');
+    d.fee = fee;
   } else {
     const nums = readInvNumbers_(tokenize_(normalizeInvText_(text)));
     const loose = nums.plain.concat(nums.bare);
@@ -1197,6 +1263,14 @@ function handleInvText_(p, message) {
   const ctx = invCtx_(false);
   if (d.mode === 'sell') advanceSell_(p, ctx);
   else advanceBuy_(p, ctx);
+}
+
+/** A typed fee ("5rb", "12.500", "fee 5rb") → whole Rupiah, or null. Pure; tested by testInvParser. */
+function readInvFee_(text) {
+  const nums = readInvNumbers_(tokenize_(normalizeInvText_(text)));
+  const v = nums.fee !== null ? nums.fee : nums.total !== null ? nums.total : nums.bare.concat(nums.plain)[0];
+  if (v === undefined || v === null || !(v >= 0) || nums.qty !== null || nums.price !== null) return null;
+  return Math.round(v);
 }
 
 function saveBuy_(p, ctx, user) {
@@ -1337,7 +1411,7 @@ function startInvUpdate_(chatId, text) {
   }
   const p = newPending_(chatId, 'inv', { mode: 'update', bulk: text.split(/\n|;/).filter(function (l) { return l.trim(); }).length > 1,
     items: r.items.map(function (it) { return { name: it.name, ids: it.rows.map(function (x) { return x.id; }), unit: it.unit, price: it.price,
-      old: it.old, qty: it.qty }; }) });
+      old: it.old, qty: it.qty }; }), unknown: r.unknown, unknownPrices: r.unknownPrices });
   const lines = ['📈 <b>Price update</b>'];
   r.items.forEach(function (it) {
     const change = it.old ? (it.price - it.old) / it.old : 0;
@@ -1353,11 +1427,31 @@ function startInvUpdate_(chatId, text) {
     lines.push('', '❓ Not found: <b>' + escapeHtml_(r.unknown.join(', ')) + '</b>');
     if (r.items.length) rows.push([btn_(p, '✅ Skip those, save the rest', 'y'), btn_(p, '✏️ Correct it', 'fix')]);
     else rows.push([btn_(p, '✏️ Correct it', 'fix')]);
+    rows.push([btn_(p, '➕ Create it', 'cr')]);
   } else {
     rows.push([btn_(p, '✅ Save', 'y'), btn_(p, '❌ Cancel', 'n')]);
   }
   if (r.unknown.length) rows.push(cancelRow_(p));
   showStep_(p, lines.join('\n'), rows);
+}
+
+/**
+ * /inv update [➕ Create it]: a price alone can't make a holding, so this sends a
+ * ready "beli …" message per unknown name to fill in and send. The price
+ * update stays open (its buttons still work) so the rest can be saved first.
+ */
+function invCreateHint_(p, ctx) {
+  const d = p.d;
+  const sources = invSourceWallets_(ctx);
+  const from = sources.length ? ' dari ' + sources[0].name : '';
+  const lines = (d.unknown || []).map(function (name) {
+    const typed = (d.unknownPrices || {})[name] || '';
+    const price = !typed ? '[price]' : typed.indexOf('/') !== -1 ? typed : '@' + typed;
+    return '<code>' + escapeHtml_('beli ' + name + ' [qty] [unit] ' + price + from) + '</code>';
+  });
+  sendMessage(p.chatId, '➕ A price alone can\'t create a holding: I need how much you bought and which wallet paid.\n' +
+    'Copy this, fill in the quantity and unit (<code>gr</code>, <code>lot</code>, <code>unit</code>…), and send it:\n' + lines.join('\n') +
+    (d.items.length ? '\n\nFirst tap <b>✅ Skip those, save the rest</b> above if you want the other prices saved.' : ''));
 }
 
 function saveInvUpdate_(p, ctx) {

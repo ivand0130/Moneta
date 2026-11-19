@@ -117,6 +117,7 @@ Go down this list; stop when it works again.
 |---|---|
 | upgradeSheets | After an update that says so; also rebuilds the Dashboard |
 | clearConfigCache | After editing Users or Settings, to apply at once |
+| refreshTemplate | Make the template the same as the main sheet (after changes by hand, e.g. dropdown settings), without your data |
 | setWebhook / getWebhookInfo | Bot not reachable (see section 4) |
 | showRecentUpdates | See the last 10 things the bot handled |
 | installCleanupTrigger / installReminderTrigger | Triggers missing |

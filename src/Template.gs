@@ -1104,6 +1104,82 @@ function upgradeSheets() {
   validateSheet();
 }
 
+/**
+ * Run from the editor (owner, 2026-11-19): makes the template the SAME as the main sheet as it is now —
+ * every tab, column, formula, dropdown (including "Allow multiple selections" on Wallet Group and
+ * Investment Category, which Apps Script cannot switch on, so a template built by code never has it),
+ * Dashboard, colours and protections — but without your data:
+ *   - emptied: Transactions, Hutang_Piutang, Investment_Details, Investment_Sales, Price_History, Favorites,
+ *     Contacts, Monthly Report, Budget_History, Category_History, Closed_History, Logs
+ *   - kept: Wallets (Opening Balance set to 0), Categories (keywords and budgets), Settings
+ *   - Settings: chat IDs and GoPay names cleared, Password back to 0000, the ID info rows cleared
+ * The new template replaces the old one for /template (TEMPLATE_ID); the old file is only renamed
+ * "(old …)", never deleted. Safe to run again whenever you changed the main sheet by hand.
+ */
+function refreshTemplate() {
+  headerCacheOff_ = true;
+  const main = openMainSheet_();
+  if (main === null) throw new Error('No main sheet: MAIN_SHEET_ID is not set.');
+  const mainFile = DriveApp.getFileById(main.getId());
+  const oldId = getProp_(PROP.TEMPLATE_ID);
+  let folder = null;
+  try { if (oldId) folder = DriveApp.getFileById(oldId).getParents().next(); } catch (err) { folder = null; }
+  if (folder === null) folder = mainFile.getParents().hasNext() ? mainFile.getParents().next() : DriveApp.getRootFolder();
+
+  const name = 'MonetaBot Template';
+  const file = mainFile.makeCopy(name + ' (being built)', folder);
+  try {
+    cleanTemplateCopy_(SpreadsheetApp.openById(file.getId()));
+    SpreadsheetApp.flush();
+    const check = validateSheet(file.getId());
+    if (!check.ok) throw new Error('the copy is missing tabs or columns: ' + JSON.stringify(check));
+  } catch (err) {
+    file.setTrashed(true); // nothing half-done is left behind; the old template stays in use
+    throw err;
+  }
+  if (oldId) {
+    try {
+      DriveApp.getFileById(oldId).setName(name + ' (old ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd') + ')');
+    } catch (err) { /* the old template is gone already */ }
+  }
+  file.setName(name);
+  PropertiesService.getScriptProperties().setProperty(PROP.TEMPLATE_ID, file.getId());
+  console.log('PASS: the template is now a clean copy of the main sheet: ' + file.getUrl() +
+    (oldId ? '\nThe previous template was renamed "' + name + ' (old …)"; delete it in Drive when you no longer need it.' : ''));
+}
+
+/** Empties a fresh copy of the main sheet (see refreshTemplate). Formula columns refill themselves. */
+function cleanTemplateCopy_(ss) {
+  const allRows = function (sheet) {
+    const rows = [];
+    for (let r = 2; r <= sheet.getLastRow(); r++) rows.push(r);
+    return rows;
+  };
+  [TAB.DEBTS, TAB.INVESTMENTS, TAB.SALES, TAB.PRICES, TAB.FAVORITES, TAB.CONTACTS, TAB.REPORT, TAB.BUDGET_HISTORY,
+    TAB.CATEGORY_HISTORY, TAB.CLOSED_HISTORY, TAB.LOGS].forEach(function (tab) {
+    const sheet = ss.getSheetByName(tab);
+    if (sheet !== null && sheet.getLastRow() >= 2) rewriteTableRows_(sheet, allRows(sheet), {});
+  });
+  const trx = ss.getSheetByName(TAB.TRANSACTIONS);
+  if (trx !== null && trx.getLastRow() >= 2) rewriteTransactions_(ss, allRows(trx)); // also clears the receipt links
+
+  // One column of a tab set to the same value on every data row (one write).
+  const fill = function (sheet, header, value, keyHeader) {
+    const col = getHeaderMap_(sheet)[header.toLowerCase()];
+    const last = lastDataRow_(sheet, keyHeader);
+    if (col === undefined || last < 2) return;
+    const values = [];
+    for (let r = 2; r <= last; r++) values.push([value]);
+    sheet.getRange(2, col + 1, values.length, 1).setValues(values);
+  };
+  fill(ss.getSheetByName(TAB.WALLETS), 'Opening Balance', 0, 'Wallet');
+  const settings = ss.getSheetByName(TAB.SETTINGS);
+  fill(settings, 'Chat ID', '', 'Chat ID');
+  fill(settings, 'GoPay Name', '', 'GoPay Name');
+  setSettingValue_(ss, SETTING.PASSWORD, DEFAULT_PASSWORD);
+  ['Main Sheet ID', 'Archive Folder ID', 'Receipts Folder ID'].forEach(function (k) { setSettingValue_(ss, k, ''); });
+}
+
 /** Sample wallets and categories, settings, wallet groups, placeholder users. */
 function writeSampleRows_(ss) {
   const get = function (name) { return ss.getSheetByName(name); };

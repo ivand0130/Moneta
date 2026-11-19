@@ -765,6 +765,13 @@ Still to change in code that is already built:
     ready /inv update (priceUpdateTemplate_) that parses back to every held
     asset unchanged (test "/inv update template round-trips"); nothing
     held → a short "buy first" message
+  - Owner's change (2026-11-19): refreshTemplate() (editor) rebuilds the
+    template as a cleaned copy of the main sheet, so hand-made settings
+    (Wallet Group / Investment Category multi-select, which Apps Script
+    can't set) are in the template too. Data tabs emptied; Wallets kept
+    (Opening Balance 0), Categories and Settings kept; chat IDs, GoPay
+    names, ID info rows cleared; Password 0000. Old template renamed
+    "(old date)", not deleted
   - Tests: testReport 20, testClosing 17 (snapshot), testInvParser new
     cases; all node-run tests pass. Nothing run in Apps Script yet
 ## Known issues

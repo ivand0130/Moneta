@@ -3,11 +3,12 @@
 Claude Code updates this file at the end of every phase.
 
 ## Current phase
-Phase 9 — Final review: review done, README.md + TESTING.md written, the 14
-missing SPEC items built (2026-11-18) — waiting for the owner's test.
-Pre-Phase 9 recheck — DONE (approved 2026-11-18).
-Phase 8, 7, 6, 5, 4, 3, 2B, 2, 1, 0 — DONE (Phase 8 approved by the owner 2026-11-09).
-Next: owner runs TESTING.md; then the project is complete.
+ALL PHASES DONE. Phase 9 (final review) approved by the owner 2026-11-19.
+Phase 9, pre-Phase 9 recheck, 8, 7, 6, 5, 4, 3, 2B, 2, 1, 0 — DONE.
+Check at the next month-end closing (can't be tested before then): the
+[🔒 Start closing] reminder button, Price_History Month-End rows, archive
+protection, investment start values in /report and Dashboard "Month Start".
+Next: use the bot; bug reports and changes via the prompts in PHASES.md.
 
 ## Deferred (agreed, must be picked up later — do not drop)
 (none open. The AI parsing fallback was built in Phase 3.)
@@ -719,7 +720,7 @@ Still to change in code that is already built:
     9 charts (added savings rate trend and budget vs spent)
   - Tests: testClosing 16 (month-end price in the archive, Category_History
     rows), testParser +6 cases, testDebtParser +6 due-date cases
-- Phase 9 (final review) — built 2026-11-18, owner approved all 14 gaps
+- Phase 9 (final review) — DONE 2026-11-19 (built 2026-11-18, owner approved all 14 gaps, tested OK)
   - Review against SPEC (Sections 22/23): 14 missing/partial items found,
     quota and error handling OK (see README "Limits to know")
   - README.md (owner's guide: deploy, add a wallet, password, bot not

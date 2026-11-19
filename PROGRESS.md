@@ -772,6 +772,10 @@ Still to change in code that is already built:
     (Opening Balance 0), Categories and Settings kept; chat IDs, GoPay
     names, ID info rows cleared; Password 0000. Old template renamed
     "(old date)", not deleted
+  - Owner's change (2026-11-19): long-term hutang/piutang are reminded on
+    the 1st only — the Monday weekly summary leaves them out (as SPEC 7
+    says); group records stay in both; a Monday the 1st (merged message)
+    still lists everything
   - Tests: testReport 20, testClosing 17 (snapshot), testInvParser new
     cases; all node-run tests pass. Nothing run in Apps Script yet
 ## Known issues

@@ -878,7 +878,10 @@ function testReminders() {
   t('monthly = long-term + groups', monthly.ids, ['PTG-005', 'PTG-010']);
   t('monthly lists open group members only', monthly.text.indexOf('PTG-010-A') !== -1 && monthly.text.indexOf('PTG-010-B') === -1, true);
   const weekly = buildSummaryReminder_(top, debts, now, { weekly: true, monthly: false }, false);
-  t('weekly = every open record', weekly.ids.length, 9);
+  t('weekly = every open record except long-term', [weekly.ids.length, weekly.ids.indexOf('PTG-005'), weekly.text.indexOf('<b>Groups</b>') !== -1],
+    [8, -1, true]);
+  t('Monday the 1st (merged) = every open record, long-term included',
+    buildSummaryReminder_(top, debts, now, { weekly: true, monthly: true }, false).ids.indexOf('PTG-005') !== -1, true);
   t('nothing open → no message', buildSummaryReminder_([], debts, now, { weekly: true }, false), null);
 
   const owners = debtOwners_([{ 'debt id': 'PTG-001', 'logged by': 'Me' }, { 'debt id': 'PTG-010-A', 'logged by': 'Partner' },
@@ -902,7 +905,7 @@ function testReminders() {
   const two = buildMorningMessage_([fav1, fav2], { kind: 'daily', text: '⏰ due', ids: ['PTG-003'] }, now);
   t('several → one list, no buttons', [two.markup, two.text.indexOf('Listrik') !== -1 && two.text.indexOf('Kos') !== -1 && two.text.indexOf('⏰ due') !== -1], [undefined, true]);
   t('nothing → no message', buildMorningMessage_([], null, now), null);
-  console.log((pass === 21 ? 'PASS' : 'FAIL') + ': testReminders ' + pass + '/21');
+  console.log((pass === 22 ? 'PASS' : 'FAIL') + ': testReminders ' + pass + '/22');
 }
 
 /** Investment test data: wallets typed Saham / Emas / Others, and purchase rows (stocks in lots, prices per lembar). */

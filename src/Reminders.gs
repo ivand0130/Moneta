@@ -10,7 +10,8 @@
  * Morning slot (Daily Reminder Time, 08:00): ONE message per person with
  *   - favorites due (Favorites.gs)
  *   - hutang/piutang: Monday = weekly summary (every open record), the 1st =
- *     monthly (long-term and groups), both on a Monday the 1st = merged, other
+ *     monthly (long-term and groups; long-term is NOT in the weekly summary),
+ *     both on a Monday the 1st = merged, other
  *     days = short-term records with a due date that is near or overdue
  * Exactly one item keeps its buttons ([Yes] [Change amount] [Skip] or
  * [Snooze]); two or more are a plain list (log favorites with /fav or by
@@ -237,7 +238,10 @@ function buildSummaryReminder_(mine, debts, now, plan, hide) {
   const open = mine.filter(isOpenDebt_);
   const longOrGroup = open.filter(function (d) { return d.term === 'Long' || isGroupDebt_(d, debts); });
   const short = open.filter(function (d) { return longOrGroup.indexOf(d) === -1; });
-  const shown = plan.weekly ? open : longOrGroup;
+  // Long-term records are reminded on the 1st only (owner, 2026-11-19): the Monday summary leaves them out,
+  // unless the 1st is a Monday (merged message). Groups stay in both.
+  const shown = plan.monthly ? (plan.weekly ? open : longOrGroup) : open.filter(function (d) { return d.term !== 'Long'; });
+  const lgShown = longOrGroup.filter(function (d) { return shown.indexOf(d) !== -1; });
   if (shown.length === 0) return null;
   const title = plan.weekly && plan.monthly ? '📋 <b>Weekly + monthly summary</b>'
     : plan.weekly ? '📋 <b>Weekly summary</b>' : '🗓 <b>Monthly reminder</b> · long-term and group';
@@ -252,9 +256,9 @@ function buildSummaryReminder_(mine, debts, now, plan, hide) {
     lines.push('', '<b>Short-term</b>');
     short.forEach(function (d) { lines = lines.concat(reminderLines_(d, debts, now, hide)); });
   }
-  if (longOrGroup.length) {
-    lines.push('', '<b>Long-term and groups</b>');
-    longOrGroup.forEach(function (d) { lines = lines.concat(reminderLines_(d, debts, now, hide)); });
+  if (lgShown.length) {
+    lines.push('', lgShown.some(function (d) { return d.term === 'Long'; }) ? '<b>Long-term and groups</b>' : '<b>Groups</b>');
+    lgShown.forEach(function (d) { lines = lines.concat(reminderLines_(d, debts, now, hide)); });
   }
   return { text: lines.join('\n'), ids: shown.map(function (d) { return d.id; }) };
 }

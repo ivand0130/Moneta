@@ -1027,6 +1027,11 @@ function testInvParser() {
   t('sold assets are not updated', parseInvUpdate_('TLKM 3.100', ctx.investments).unknown, ['TLKM']);
   t('price "/lot" ÷100, "/lbr" as is', [parseInvUpdate_('BBCA 1.020rb/lot', ctx.investments).items[0].price,
     parseInvUpdate_('BBCA 10.200/lbr', ctx.investments).items[0].price], [10200, 10200]);
+  // The template /inv update sends parses back exactly: every held asset, its latest price, nothing unknown or unreadable
+  const tpl = priceUpdateTemplate_(priceTemplateLines_(ctx.investments));
+  const back = parseInvUpdate_(tpl.split('\n').slice(1).join('\n'), ctx.investments);
+  t('/inv update template round-trips', [tpl.split('\n')[0], back.items.map(function (it) { return it.name + ' ' + it.price; }),
+    back.unknown, back.bad], ['/inv update', ['Antam 1350000', 'RDPU X 1520.35', 'BBCA 9900'], [], []]);
   t('update keeps the typed price of unknown names', parseInvUpdate_('XYZ 1.380rb/gr', ctx.investments).unknownPrices, { XYZ: '1.380rb/gr' });
 
   // Buying with only a category named asks the asset name; the sell fee is typed as an amount
@@ -1040,7 +1045,7 @@ function testInvParser() {
   t('asset buttons: most recent first, no category name, no repeats, max', [categoryAssets_(catInv, 'emas', 6),
     categoryAssets_(catInv, 'Emas', 1), categoryAssets_(catInv, 'Crypto', 6)], [['UBS', 'Antam'], ['UBS'], []]);
   t('sell fee amounts', ['5rb', '12.500', 'fee 5rb', '0', 'abc', '2 lot'].map(readInvFee_), [5000, 12500, 5000, 0, null, null]);
-  const total = 31 + cases.length;
+  const total = 32 + cases.length;
   console.log((pass === total ? 'PASS' : 'FAIL') + ': testInvParser ' + pass + '/' + total);
 }
 

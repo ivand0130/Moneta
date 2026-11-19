@@ -759,6 +759,11 @@ Still to change in code that is already built:
   - 13 Settings info row Receipts Folder ID (filled by /setreceipts, the
     first photo and upgradeSettings; Archive Folder ID too)
   - 14 Archive copies: every tab protected (warning-only) at closing
+  - Owner's change (2026-11-19): bare `/inv update` sends two messages:
+    "Send the new prices, one asset per line. Here's what you hold:" and a
+    ready /inv update (priceUpdateTemplate_) that parses back to every held
+    asset unchanged (test "/inv update template round-trips"); nothing
+    held → a short "buy first" message
   - Tests: testReport 20, testClosing 17 (snapshot), testInvParser new
     cases; all node-run tests pass. Nothing run in Apps Script yet
 ## Known issues

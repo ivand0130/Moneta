@@ -1405,9 +1405,15 @@ function startGuidedSell_(chatId) {
 function startInvUpdate_(chatId, text) {
   const ctx = invCtx_(true);
   if (!text) {
-    return sendMessage(chatId, 'Send the new prices, one asset per line:\n<pre>/inv update\n' +
-      priceTemplateLines_(ctx.investments).join('\n') + '</pre>' +
-      (ctx.investments.some(function (x) { return x.holding; }) ? '' : '\n(You hold nothing yet.)'));
+    // Owner (2026-11-19): two messages. The second one is a complete, valid /inv update with the latest prices
+    // (it parses back to every held asset, see testInvParser), so you copy it, change the numbers and send it.
+    const lines = priceTemplateLines_(ctx.investments);
+    if (lines.length === 0) {
+      return sendMessage(chatId, "You don't hold any investments yet, so there are no prices to update. " +
+        'Buy first, e.g. <code>beli BBCA 1 lot 9.800 dari BCA</code>.');
+    }
+    sendMessage(chatId, "Send the new prices, one asset per line. Here's what you hold:");
+    return sendMessage(chatId, '<pre>' + priceUpdateTemplate_(lines) + '</pre>');
   }
   const r = parseInvUpdate_(text, ctx.investments);
   if (r.items.length === 0 && r.unknown.length === 0) {
@@ -1477,6 +1483,11 @@ function saveInvUpdate_(p, ctx) {
     '). Saved to Price_History. /inv shows the new values.');
 }
 
+/** The whole /inv update message to copy: the command, then one held asset per line. */
+function priceUpdateTemplate_(lines) {
+  return '/inv update\n' + lines.join('\n');
+}
+
 /** "BBCA 9.800" lines for every held asset (latest price), for copying. */
 function priceTemplateLines_(investments) {
   return invSummary_(investments, []).reduce(function (lines, c) {
@@ -1499,7 +1510,7 @@ function isLastDayOfMonth_(now) {
 function buildPriceReminderText_(investments) {
   const lines = priceTemplateLines_(investments);
   if (lines.length === 0) return null;
-  return '📈 <b>Time to update investment prices</b> (last day of the month). Last prices:\n<pre>/inv update\n' + lines.join('\n') +
+  return '📈 <b>Time to update investment prices</b> (last day of the month). Last prices:\n<pre>' + priceUpdateTemplate_(lines) +
     '</pre>\nCopy it, change the numbers, send it. (Prices you typed in the Investments tab count too.)';
 }
 
